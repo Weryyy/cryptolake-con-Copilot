@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: '0 7 * * *'  # Daily at 07:00 UTC
 
+permissions:
+  contents: read
+
 jobs:
   quality-check:
     runs-on: ubuntu-latest
