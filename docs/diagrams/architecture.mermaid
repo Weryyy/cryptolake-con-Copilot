@@ -1,0 +1,58 @@
+graph TB
+    subgraph Sources["DATA SOURCES"]
+        BinanceWS[Binance WebSocket<br/>Real-time prices]
+        CoinGecko[CoinGecko API<br/>Historical data]
+        FearGreed[Alternative.me<br/>Fear & Greed Index]
+    end
+
+    subgraph Ingestion["INGESTION LAYER"]
+        KafkaProducer[Kafka Producer<br/>Python + confluent-kafka]
+        BatchExtractors[Batch Extractors<br/>Python + requests]
+    end
+
+    subgraph Streaming["STREAMING"]
+        Kafka[Apache Kafka<br/>Topic: prices.realtime]
+    end
+
+    subgraph Storage["LAKEHOUSE - MinIO + Apache Iceberg"]
+        Bronze[🥉 BRONZE<br/>Raw data, append-only]
+        Silver[🥈 SILVER<br/>Clean, deduplicated]
+        Gold[🥇 GOLD<br/>Star Schema]
+    end
+
+    subgraph Processing["PROCESSING"]
+        SparkStreaming[Spark Structured Streaming<br/>Kafka → Bronze]
+        SparkBatch[Spark Batch<br/>Bronze → Silver]
+        dbt[dbt<br/>Silver → Gold]
+    end
+
+    subgraph Orchestration["ORCHESTRATION"]
+        Airflow[Apache Airflow<br/>DAGs & Scheduling]
+    end
+
+    subgraph Serving["SERVING LAYER"]
+        FastAPI[FastAPI<br/>REST API]
+        Streamlit[Streamlit<br/>Dashboard]
+    end
+
+    subgraph Quality["DATA QUALITY"]
+        GE[Great Expectations<br/>Validation]
+    end
+
+    BinanceWS --> KafkaProducer --> Kafka
+    CoinGecko --> BatchExtractors
+    FearGreed --> BatchExtractors
+
+    Kafka --> SparkStreaming --> Bronze
+    BatchExtractors --> Bronze
+
+    Bronze --> SparkBatch --> Silver
+    Silver --> dbt --> Gold
+
+    Airflow --> SparkBatch
+    Airflow --> dbt
+    Airflow --> BatchExtractors
+
+    Gold --> FastAPI --> Streamlit
+    Bronze --> GE
+    Silver --> GE

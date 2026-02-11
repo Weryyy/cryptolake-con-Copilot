@@ -1,0 +1,10 @@
+version: 2
+
+sources:
+  - name: silver
+    schema: silver
+    tables:
+      - name: daily_prices
+        description: "Cleaned and deduplicated daily crypto prices"
+      - name: fear_greed
+        description: "Cleaned Fear & Greed Index data"

@@ -1,0 +1,9 @@
+coin_id,name,symbol,category
+bitcoin,Bitcoin,BTC,Layer 1
+ethereum,Ethereum,ETH,Layer 1
+solana,Solana,SOL,Layer 1
+cardano,Cardano,ADA,Layer 1
+polkadot,Polkadot,DOT,Layer 0
+chainlink,Chainlink,LINK,Oracle
+avalanche-2,Avalanche,AVAX,Layer 1
+matic-network,Polygon,MATIC,Layer 2
