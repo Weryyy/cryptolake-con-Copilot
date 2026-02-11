@@ -1,0 +1,64 @@
+# Data Contract: Bronze Realtime Prices
+contract:
+  name: bronze_realtime_prices
+  version: "1.0.0"
+  owner: ingestion-team
+  description: >
+    Precios de criptomonedas en tiempo real desde Binance WebSocket.
+    Datos raw sin transformar, append-only.
+
+schema:
+  type: record
+  fields:
+    - name: coin_id
+      type: string
+      required: true
+      description: "Identificador único del coin (ej: bitcoin, ethereum)"
+    - name: symbol
+      type: string
+      required: true
+      description: "Símbolo del par de trading (ej: BTCUSDT)"
+    - name: price_usd
+      type: double
+      required: true
+      constraints:
+        minimum: 0
+      description: "Precio en USD, siempre positivo"
+    - name: quantity
+      type: double
+      required: false
+      description: "Cantidad del trade"
+    - name: trade_time_ms
+      type: long
+      required: true
+      description: "Timestamp del trade en milisegundos epoch"
+    - name: event_time_ms
+      type: long
+      required: false
+      description: "Timestamp del evento de Binance"
+    - name: ingested_at
+      type: string
+      required: true
+      description: "Timestamp ISO de cuando se ingirió el dato"
+    - name: source
+      type: string
+      required: true
+      description: "Fuente del dato (binance_websocket)"
+    - name: is_buyer_maker
+      type: boolean
+      required: false
+      description: "Si el comprador fue el maker del trade"
+
+quality:
+  freshness:
+    max_delay: "5 minutes"
+    description: "Datos no deben tener más de 5 min de retraso"
+  completeness:
+    required_fields_not_null: ["coin_id", "price_usd", "trade_time_ms"]
+  volume:
+    min_records_per_hour: 1000
+    description: "Al menos 1000 trades/hora durante mercado activo"
+
+sla:
+  availability: "99.5%"
+  support_channel: "#data-engineering"

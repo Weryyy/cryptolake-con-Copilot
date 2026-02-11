@@ -1,0 +1,51 @@
+# Data Contract: Silver Daily Prices
+contract:
+  name: silver_daily_prices
+  version: "1.0.0"
+  owner: processing-team
+  description: >
+    Precios diarios de criptomonedas limpios y deduplicados.
+    Un registro por coin por día.
+
+schema:
+  type: record
+  fields:
+    - name: coin_id
+      type: string
+      required: true
+      description: "Identificador único del coin"
+    - name: price_date
+      type: date
+      required: true
+      description: "Fecha del precio"
+    - name: price_usd
+      type: double
+      required: true
+      constraints:
+        minimum: 0
+      description: "Precio diario en USD"
+    - name: market_cap_usd
+      type: double
+      required: false
+      description: "Capitalización de mercado en USD"
+    - name: volume_24h_usd
+      type: double
+      required: false
+      description: "Volumen de trading 24h en USD"
+    - name: _processed_at
+      type: timestamp
+      required: true
+      description: "Timestamp de procesamiento"
+
+quality:
+  uniqueness:
+    columns: ["coin_id", "price_date"]
+    description: "Una fila por coin por día"
+  completeness:
+    required_fields_not_null: ["coin_id", "price_date", "price_usd"]
+  freshness:
+    max_delay: "24 hours"
+
+sla:
+  availability: "99%"
+  support_channel: "#data-engineering"

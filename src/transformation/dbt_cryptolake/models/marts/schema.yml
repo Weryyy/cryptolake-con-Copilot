@@ -1,0 +1,41 @@
+version: 2
+
+models:
+  - name: fact_market_daily
+    description: "Tabla de hechos con métricas de mercado crypto diarias"
+    columns:
+      - name: coin_id
+        description: "Identificador único del cryptocurrency"
+        tests:
+          - not_null
+      - name: price_date
+        description: "Fecha del registro"
+        tests:
+          - not_null
+      - name: price_usd
+        description: "Precio en USD"
+        tests:
+          - not_null
+      - name: fear_greed_value
+        description: "Índice Fear & Greed (0-100)"
+        tests:
+          - accepted_values:
+              values: [0, 100]
+              config:
+                where: "fear_greed_value IS NOT NULL"
+
+  - name: dim_coins
+    description: "Dimensión con estadísticas de cada criptomoneda"
+    columns:
+      - name: coin_id
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_dates
+    description: "Dimensión calendario"
+    columns:
+      - name: date_day
+        tests:
+          - unique
+          - not_null

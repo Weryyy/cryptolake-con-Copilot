@@ -1,0 +1,15 @@
+# Daily validation checkpoint
+name: daily_validation
+config_version: 1.0
+
+validations:
+  - expectation_suite_name: bronze_prices_suite
+    action_list:
+      - name: store_validation_result
+        action:
+          class_name: StoreValidationResultAction
+  - expectation_suite_name: silver_prices_suite
+    action_list:
+      - name: store_validation_result
+        action:
+          class_name: StoreValidationResultAction

@@ -1,0 +1,27 @@
+cryptolake:
+  target: dev
+  outputs:
+    dev:
+      type: spark
+      method: thrift
+      host: localhost
+      port: 10001
+      schema: gold
+      connect_retries: 3
+      connect_timeout: 60
+    prod:
+      type: spark
+      method: thrift
+      host: spark-master
+      port: 10001
+      schema: gold
+      connect_retries: 3
+      connect_timeout: 60
+    ci:
+      type: spark
+      method: thrift
+      host: localhost
+      port: 10001
+      schema: gold_ci
+      connect_retries: 1
+      connect_timeout: 30
