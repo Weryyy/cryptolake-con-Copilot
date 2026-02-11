@@ -52,7 +52,7 @@ def ensure_bronze_table(spark: SparkSession):
             _spark_ingested_at TIMESTAMP NOT NULL
         )
         USING iceberg
-        PARTITIONED BY (days(trade_time_ts))
+        PARTITIONED BY (days(_spark_ingested_at))
         TBLPROPERTIES (
             'write.format.default' = 'parquet',
             'write.parquet.compression-codec' = 'zstd',
