@@ -8,7 +8,9 @@ RUN pip install --no-cache-dir \
     pydantic>=2.5.0 \
     pydantic-settings>=2.1.0 \
     structlog>=24.1.0 \
-    requests>=2.31.0
+    requests>=2.31.0 \
+    confluent-kafka==2.3.0 \
+    websockets==12.0
 
 COPY . .
 

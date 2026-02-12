@@ -1,9 +1,8 @@
 # ============================================================
 # Spark 3.5 con soporte para Apache Iceberg y S3 (MinIO)
 # ============================================================
-# Base: imagen oficial de Bitnami con Spark 3.5 preinstalado
-# Añadimos: JARs de Iceberg + librerías Python para data engineering
-FROM bitnami/spark:3.5
+# Base: imagen oficial de Spark 3.5
+FROM apache/spark:3.5.0
 
 USER root
 
@@ -24,15 +23,18 @@ RUN pip install --no-cache-dir \
 ENV ICEBERG_VERSION=1.5.2
 
 # iceberg-spark-runtime: El "driver" de Iceberg para Spark
-RUN curl -L -o /opt/bitnami/spark/jars/iceberg-spark-runtime-3.5_2.12-${ICEBERG_VERSION}.jar \
+RUN curl -L -o /opt/spark/jars/iceberg-spark-runtime-3.5_2.12-${ICEBERG_VERSION}.jar \
     https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/${ICEBERG_VERSION}/iceberg-spark-runtime-3.5_2.12-${ICEBERG_VERSION}.jar
 
 # iceberg-aws-bundle: Para que Iceberg hable con S3/MinIO
-RUN curl -L -o /opt/bitnami/spark/jars/iceberg-aws-bundle-${ICEBERG_VERSION}.jar \
+RUN curl -L -o /opt/spark/jars/iceberg-aws-bundle-${ICEBERG_VERSION}.jar \
     https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/${ICEBERG_VERSION}/iceberg-aws-bundle-${ICEBERG_VERSION}.jar
 
 # Configuración por defecto de Spark
-COPY spark-defaults.conf /opt/bitnami/spark/conf/spark-defaults.conf
+COPY spark-defaults.conf /opt/spark/conf/spark-defaults.conf
 
-# Volver al usuario no-root por seguridad
-USER 1001
+# Hadoop/Spark a veces necesitan que el usuario tenga un nombre definido
+ENV USER=root
+
+# Mantener como root para evitar problemas de permisos en /opt/spark en esta imagen base
+USER root

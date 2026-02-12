@@ -7,7 +7,7 @@ Patrón Template Method:
 """
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, List, Dict
 
 import requests
 import structlog
@@ -36,13 +36,14 @@ class BaseExtractor(ABC):
             "Accept": "application/json",
         })
 
-    def run(self) -> list[dict[str, Any]]:
+    def run(self) -> List[Dict[str, Any]]:
         """Ejecuta el pipeline completo: extract → validate → enrich."""
         logger.info("extraction_started", source=self.source_name)
         start_time = datetime.now(timezone.utc)
 
         raw_data = self.extract()
-        logger.info("extraction_raw", source=self.source_name, raw_count=len(raw_data))
+        logger.info("extraction_raw", source=self.source_name,
+                    raw_count=len(raw_data))
 
         validated_data = self.validate(raw_data)
         logger.info(
@@ -65,15 +66,15 @@ class BaseExtractor(ABC):
         return enriched_data
 
     @abstractmethod
-    def extract(self) -> list[dict[str, Any]]:
+    def extract(self) -> List[Dict[str, Any]]:
         """Extrae datos de la fuente. Debe ser implementado."""
         ...
 
-    def validate(self, data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def validate(self, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Validación básica: filtra registros None."""
         return [record for record in data if record is not None]
 
-    def enrich(self, data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def enrich(self, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Añade metadata de ingesta a cada registro."""
         now = datetime.now(timezone.utc).isoformat()
         for record in data:

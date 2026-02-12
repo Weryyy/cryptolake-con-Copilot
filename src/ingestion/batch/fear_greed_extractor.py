@@ -12,7 +12,7 @@ API: https://api.alternative.me/fng/
 Para ejecutar:
     python -m src.ingestion.batch.fear_greed_extractor
 """
-from typing import Any
+from typing import Any, List, Dict
 
 import structlog
 
@@ -29,7 +29,7 @@ class FearGreedExtractor(BaseExtractor):
         super().__init__(source_name="fear_greed_index")
         self.days = days
 
-    def extract(self) -> list[dict[str, Any]]:
+    def extract(self) -> List[Dict[str, Any]]:
         """Extrae datos históricos del Fear & Greed Index."""
         logger.info("extracting_fear_greed", days=self.days)
 
@@ -57,7 +57,7 @@ class FearGreedExtractor(BaseExtractor):
         logger.info("fear_greed_extracted", total_records=len(records))
         return records
 
-    def validate(self, data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def validate(self, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Valida que el valor esté en rango 0-100."""
         return [
             r for r in data
@@ -72,7 +72,8 @@ if __name__ == "__main__":
 
     if records:
         print(f"\n📊 Fear & Greed Index - Últimos {len(records)} días:")
-        print(f"   Último valor: {records[0]['value']} ({records[0]['classification']})")
+        print(
+            f"   Último valor: {records[0]['value']} ({records[0]['classification']})")
 
         from collections import Counter
         dist = Counter(r["classification"] for r in records)

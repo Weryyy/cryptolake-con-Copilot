@@ -7,6 +7,8 @@ Pydantic Settings lee automáticamente de:
 
 Ejemplo: MINIO_ENDPOINT en .env → settings.minio_endpoint en Python
 """
+from __future__ import annotations
+from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,7 +46,7 @@ class Settings(BaseSettings):
     fear_greed_url: str = "https://api.alternative.me/fng/"
 
     # ── Coins a rastrear ────────────────────────────────────
-    tracked_coins: list[str] = [
+    tracked_coins: List[str] = [
         "bitcoin",
         "ethereum",
         "solana",

@@ -45,9 +45,22 @@ status: ## Ver estado de los servicios
 
 spark-shell: ## Abrir consola PySpark interactiva
 	docker exec -it cryptolake-spark-master \
-	    /opt/bitnami/spark/bin/pyspark
+	    /opt/spark/bin/pyspark
 
 kafka-topics: ## Listar topics de Kafka
+	docker exec cryptolake-kafka kafka-topics --bootstrap-server localhost:9092 --list
+
+init-iceberg: ## Inicializar tablas Iceberg
+	docker exec -w /opt/spark/work cryptolake-spark-master python3 -m src.processing.batch.init_iceberg
+
+seed: ## Load seed data
+	python scripts/seed_data.py
+
+pipeline: ## Run full pipeline manually
+	@echo "🚀 Running full CryptoLake pipeline..."
+	docker exec -w /opt/spark/work cryptolake-spark-master python3 -m src.processing.batch.api_to_bronze
+	docker exec -w /opt/spark/work cryptolake-spark-master python3 -m src.processing.batch.bronze_to_silver
+	@echo "✅ Pipeline complete!"
 	docker exec cryptolake-kafka \
 	    kafka-topics --bootstrap-server localhost:29092 --list
 
@@ -88,8 +101,6 @@ seed: ## Load seed data
 
 pipeline: ## Run full pipeline manually
 	@echo "🚀 Running full CryptoLake pipeline..."
-	python -m src.ingestion.batch.coingecko_extractor
-	python -m src.processing.batch.api_to_bronze
-	python -m src.processing.batch.bronze_to_silver
-	cd src/transformation/dbt_cryptolake && dbt run
+	docker exec -w /opt/spark/work cryptolake-spark-master python3 -m src.processing.batch.api_to_bronze
+	docker exec -w /opt/spark/work cryptolake-spark-master python3 -m src.processing.batch.bronze_to_silver
 	@echo "✅ Pipeline complete!"

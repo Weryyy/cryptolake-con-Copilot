@@ -8,7 +8,7 @@ Para ejecutar:
     python -m src.ingestion.batch.coingecko_extractor
 """
 import time
-from typing import Any
+from typing import Any, List, Dict
 
 import structlog
 
@@ -26,14 +26,14 @@ class CoinGeckoExtractor(BaseExtractor):
         self.days = days
         self.base_url = settings.coingecko_base_url
 
-    def extract(self) -> list[dict[str, Any]]:
+    def extract(self) -> List[Dict[str, Any]]:
         """
         Extrae datos históricos de todos los coins configurados.
 
         Para cada coin obtiene precios, market cap y volumen.
         Respeta rate limiting con sleep entre requests.
         """
-        all_records: list[dict[str, Any]] = []
+        all_records: List[Dict[str, Any]] = []
 
         for i, coin_id in enumerate(settings.tracked_coins):
             try:
@@ -102,7 +102,7 @@ class CoinGeckoExtractor(BaseExtractor):
 
         return all_records
 
-    def validate(self, data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def validate(self, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Valida que los precios sean positivos y los timestamps válidos."""
         valid = []
         invalid_count = 0

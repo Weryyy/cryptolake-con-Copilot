@@ -68,11 +68,13 @@ def process_historical_prices(spark: SparkSession):
         .filter(col("price_usd") > 0)
         .withColumn(
             "market_cap_usd",
-            when(col("market_cap_usd") > 0, col("market_cap_usd")).otherwise(None)
+            when(col("market_cap_usd") > 0, col(
+                "market_cap_usd")).otherwise(None)
         )
         .withColumn(
             "volume_24h_usd",
-            when(col("volume_24h_usd") > 0, col("volume_24h_usd")).otherwise(None)
+            when(col("volume_24h_usd") > 0, col(
+                "volume_24h_usd")).otherwise(None)
         )
     )
 
@@ -122,8 +124,18 @@ def process_fear_greed(spark: SparkSession):
     """Transforma Fear & Greed Index de Bronze a Silver."""
     bronze_df = spark.table("cryptolake.bronze.fear_greed_index")
 
-    silver_df = (
+    # 1. Deduplicar en Bronze antes de pasar a Silver
+    dedup_window = Window.partitionBy(
+        "timestamp").orderBy(col("_ingested_at").desc())
+    deduped_bronze = (
         bronze_df
+        .withColumn("_row_num", row_number().over(dedup_window))
+        .filter(col("_row_num") == 1)
+        .drop("_row_num")
+    )
+
+    silver_df = (
+        deduped_bronze
         .withColumn("index_date", from_unixtime(col("timestamp")).cast("date"))
         .withColumn("_processed_at", current_timestamp())
         .select(
