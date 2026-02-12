@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Query
 
 from src.serving.api.models.schemas import PriceResponse
+from src.serving.api.utils import get_iceberg_catalog
 
 router = APIRouter(tags=["Prices"])
 
@@ -33,5 +34,18 @@ async def get_prices(
     if not start_date:
         start_date = end_date - timedelta(days=30)
 
-    # In production: query Iceberg via PyIceberg or Spark Thrift Server
-    return []
+    try:
+        catalog = get_iceberg_catalog()
+        table = catalog.load_table("silver.daily_prices")
+
+        # Filtrar por coin_id y fechas
+        df = table.scan(
+            row_filter=f"coin_id == '{coin_id}' AND price_date >= '{start_date}' AND price_date <= '{end_date}'",
+            limit=limit
+        ).to_arrow().to_pylist()
+
+        return [PriceResponse(**row) for row in df]
+    except Exception as e:
+        # En un caso real usaríamos logs y respuestas de error apropiadas
+        print(f"Error querying Iceberg: {e}")
+        return []

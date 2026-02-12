@@ -106,7 +106,13 @@ def process_historical_prices(spark: SparkSession):
         )
         USING iceberg
         PARTITIONED BY (coin_id)
+        TBLPROPERTIES (
+            'write.format.default' = 'parquet',
+            'write.parquet.compression-codec' = 'zstd'
+        )
     """)
+    spark.sql(
+        "ALTER TABLE cryptolake.silver.daily_prices WRITE ORDERED BY price_date")
 
     spark.sql("""
         MERGE INTO cryptolake.silver.daily_prices AS target

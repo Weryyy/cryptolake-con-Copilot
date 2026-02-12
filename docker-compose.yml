@@ -23,8 +23,21 @@ x-common-env: &common-env
   AWS_ACCESS_KEY_ID: cryptolake
   AWS_SECRET_ACCESS_KEY: cryptolake123
   AWS_REGION: us-east-1
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
 
 services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: cryptolake-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   # ==========================================================
   # CAPA DE ALMACENAMIENTO
@@ -141,13 +154,85 @@ services:
     environment:
       <<: *common-env
       SPARK_MASTER_URL: spark://spark-master:7077
-      SPARK_WORKER_MEMORY: 2g
-      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_MEMORY: 4g
+      SPARK_WORKER_CORES: 4
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     depends_on:
       - spark-master
     volumes:
       - ./src:/opt/spark/work/src
+
+  # ==========================================================
+  # REAL-TIME ANALYZERS
+  # ==========================================================
+
+  streaming-producer:
+    build:
+      context: ./docker/api
+      dockerfile: Dockerfile
+    container_name: cryptolake-streaming-producer
+    environment:
+      <<: *common-env
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: /app
+    command: python src/ingestion/streaming/binance_producer.py
+    depends_on:
+      - kafka
+    volumes:
+      - ./src:/app/src
+
+  spark-streaming-bronze:
+    build:
+      context: ./docker/spark
+      dockerfile: Dockerfile
+    container_name: cryptolake-spark-bronze
+    environment:
+      <<: *common-env
+      SPARK_MASTER_URL: spark://spark-master:7077
+      PYTHONPATH: /opt/spark/work
+    command: >
+      /opt/spark/bin/spark-submit  --master spark://spark-master:7077  --conf spark.cores.max=1 --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0  /opt/spark/work/src/processing/streaming/stream_to_bronze.py
+    depends_on:
+      - spark-master
+      - kafka
+      - iceberg-rest
+    volumes:
+      - ./src:/opt/spark/work/src
+
+  spark-streaming-vwap:
+    build:
+      context: ./docker/spark
+      dockerfile: Dockerfile
+    container_name: cryptolake-spark-vwap
+    environment:
+      <<: *common-env
+      SPARK_MASTER_URL: spark://spark-master:7077
+      PYTHONPATH: /opt/spark/work
+    command: >
+      /opt/spark/bin/spark-submit  --master spark://spark-master:7077  --conf spark.cores.max=1 --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0,org.apache.hadoop:hadoop-aws:3.3.4 /opt/spark/work/src/processing/streaming/silver_realtime_vwap.py
+    depends_on:
+      - spark-master
+      - iceberg-rest
+      - spark-streaming-bronze
+    volumes:
+      - ./src:/opt/spark/work/src
+
+  ml-inference:
+    build:
+      context: ./docker/api
+      dockerfile: Dockerfile
+    container_name: cryptolake-ml
+    environment:
+      <<: *common-env
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+    command: python src/ml/inference_service.py
+    depends_on:
+      - redis
+      - api
+    volumes:
+      - ./src:/app/src
+      - ./models:/app/models
 
   # ==========================================================
   # CAPA DE ORQUESTACIÓN
@@ -226,6 +311,7 @@ services:
       - "8000:8000"
     environment:
       <<: *common-env
+      PYTHONUNBUFFERED: "1"
     volumes:
       - ./src:/app/src
 
@@ -240,7 +326,7 @@ services:
     volumes:
       - ./src/serving/dashboard:/app
     command: >
-      bash -c "pip install streamlit requests plotly pandas && streamlit run /app/app.py --server.address 0.0.0.0"
+      bash -c "pip install streamlit requests plotly pandas streamlit-autorefresh && streamlit run /app/app.py --server.address 0.0.0.0"
     depends_on:
       - api
 

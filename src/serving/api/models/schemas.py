@@ -35,3 +35,21 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     services: dict
+
+
+class PredictionResponse(BaseModel):
+    timestamp: float
+    predicted_price: float
+    current_price: float
+    sentiment_bias: str
+    memory_details: Optional[dict] = None
+
+
+class OHLCResponse(BaseModel):
+    timestamp: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    is_anomaly: int

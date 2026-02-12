@@ -8,3 +8,9 @@ sources:
         description: "Cleaned and deduplicated daily crypto prices"
       - name: fear_greed
         description: "Cleaned Fear & Greed Index data"
+
+  - name: bronze
+    schema: bronze
+    tables:
+      - name: realtime_prices
+        description: "Raw streaming prices from Kafka"

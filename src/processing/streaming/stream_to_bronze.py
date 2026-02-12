@@ -38,28 +38,31 @@ def create_spark_session() -> SparkSession:
 
 def ensure_bronze_table(spark: SparkSession):
     """Crea la tabla Iceberg Bronze si no existe."""
+    spark.sql("CREATE NAMESPACE IF NOT EXISTS bronze")
     spark.sql("""
-        CREATE TABLE IF NOT EXISTS cryptolake.bronze.realtime_prices (
-            coin_id         STRING      NOT NULL,
-            symbol          STRING      NOT NULL,
-            price_usd       DOUBLE      NOT NULL,
+        CREATE TABLE IF NOT EXISTS bronze.realtime_prices (
+            coin_id         STRING,
+            symbol          STRING,
+            price_usd       DOUBLE,
             quantity         DOUBLE,
-            trade_time_ms   BIGINT      NOT NULL,
+            trade_time_ms   BIGINT,
             event_time_ms   BIGINT,
-            ingested_at     STRING      NOT NULL,
-            source          STRING      NOT NULL,
+            ingested_at     STRING,
+            source          STRING,
             is_buyer_maker  BOOLEAN,
             _spark_ingested_at TIMESTAMP NOT NULL
         )
         USING iceberg
-        PARTITIONED BY (days(_spark_ingested_at))
+        PARTITIONED BY (coin_id)
         TBLPROPERTIES (
             'write.format.default' = 'parquet',
             'write.parquet.compression-codec' = 'zstd',
-            'write.metadata.delete-after-commit.enabled' = 'true',
-            'write.metadata.previous-versions-max' = '10'
+            'write.distribution-mode' = 'hash'
         )
     """)
+    # Aplicar Sort Order (requiere Spark Iceberg extensions)
+    # Esto ayuda a que PyIceberg lea menos datos al filtrar por tiempo
+    spark.sql("ALTER TABLE bronze.realtime_prices WRITE ORDERED BY trade_time_ms")
 
 
 def run_streaming_job():
@@ -107,9 +110,8 @@ def run_streaming_job():
         enriched_df.writeStream
         .format("iceberg")
         .outputMode("append")
-        .option("path", "cryptolake.bronze.realtime_prices")
-        .option("checkpointLocation",
-                f"s3a://{settings.bronze_bucket}/checkpoints/stream_to_bronze")
+        .option("path", "bronze.realtime_prices")
+        .option("checkpointLocation", "checkpoints/stream_to_bronze")
         .trigger(processingTime="30 seconds")
         .start()
     )

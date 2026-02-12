@@ -10,7 +10,13 @@ RUN pip install --no-cache-dir \
     structlog>=24.1.0 \
     requests>=2.31.0 \
     confluent-kafka==2.3.0 \
-    websockets==12.0
+    websockets==12.0 \
+    pyiceberg[s3fs,pyarrow]>=0.7.0 \
+    prometheus-fastapi-instrumentator>=7.0.0 \
+    redis \
+    pandas \
+    torch --extra-index-url https://download.pytorch.org/whl/cpu \
+    redis>=5.0.0
 
 COPY . .
 

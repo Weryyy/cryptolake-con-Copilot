@@ -13,7 +13,16 @@
 
 ---
 
-## 🏗️ Architecture
+## � Objetivo del Proyecto
+El objetivo principal de **CryptoLake** es proporcionar una plataforma de datos robusta, escalable y de baja latencia para el análisis del mercado de criptomonedas. El proyecto demuestra la implementación de patrones modernos de ingeniería de datos, integrando:
+*   **Ingesta Híbrida**: Captura de eventos en tiempo real (Binance) y lotes históricos (CoinGecko).
+*   **Eficiencia de Almacenamiento**: Uso de **Apache Iceberg** para manejar transacciones ACID, evolución de esquemas y compactación de datos.
+*   **Gobernanza y Calidad**: Transformaciones estructuradas con **dbt** y validaciones de calidad en cada capa.
+*   **Servicio de Datos**: Provisión de métricas refinadas a través de una API de alto rendimiento lista para ser consumida por aplicaciones finales.
+
+---
+
+## �🏗️ Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -181,6 +190,29 @@ make pipeline
 - [Data Dictionary](docs/data_dictionary.md)
 - [Setup Guide](docs/setup_guide.md)
 - [Data Contracts](docs/data_contracts/)
+- [Troubleshooting Log](troubleshooting_log.md)
+
+---
+
+## 🚀 Roadmap y Optimizaciones
+Estamos evolucionando el proyecto con las siguientes mejoras críticas:
+
+### 1. Optimización del Almacenamiento (Iceberg Tuning)
+*   **Hidden Partitioning & Sort Orders**: Implementación de `SORTED BY (timestamp)` en archivos Iceberg para maximizar el *data skipping* con PyArrow.
+*   **Compaction DAG**: Automatización con Airflow para ejecutar `rewriteDataFiles`, consolidando micro-archivos de streaming en archivos optimizados.
+
+### 2. Algoritmos de Rendimiento
+*   **VWAP en Tiempo Real**: Cálculo distribuido del precio promedio ponderado por volumen en ventanas deslizantes.
+*   **Detección de Anomalías**: Capa de QA que utiliza Z-Score para identificar y marcar variaciones sospechosas en tiempo real.
+
+### 3. Analytics Avanzado (Gold Layer)
+*   **Modelos OHLC**: Agregaciones dbt para velas de 1h, 4h y 1d directamente en la capa Gold.
+*   **API Hot-Path**: Migración de las consultas pesadas del dashboard a tablas Gold pre-agregadas.
+
+### 4. Caché de Baja Latencia
+*   **Redis Integration**: Almacenamiento en caché de los "últimos 5 minutos" de precios para reducir la carga sobre el Storage Layer y permitir una respuesta de API sub-10ms.
+
+---
 
 ## 📜 License
 

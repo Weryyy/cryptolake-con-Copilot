@@ -24,3 +24,15 @@ SILVER_FEAR_GREED_SCHEMA = StructType([
     StructField("index_date", DateType(), nullable=False),
     StructField("_processed_at", TimestampType(), nullable=False),
 ])
+
+SILVER_REALTIME_VWAP_SCHEMA = StructType([
+    StructField("coin_id", StringType(), nullable=False),
+    StructField("window_start", TimestampType(), nullable=False),
+    StructField("window_end", TimestampType(), nullable=False),
+    StructField("vwap", DoubleType(), nullable=False),
+    StructField("total_volume", DoubleType(), nullable=False),
+    StructField("avg_price", DoubleType(), nullable=False),
+    StructField("stddev_price", DoubleType(), nullable=True),
+    StructField("z_score", DoubleType(), nullable=True),
+    StructField("is_anomaly", IntegerType(), nullable=False),
+])
