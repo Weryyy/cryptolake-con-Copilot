@@ -79,14 +79,14 @@ pred = fetch_prediction()
 if pred:
     st.sidebar.markdown("---")
     st.sidebar.subheader("🤖 ML Status (Dual Memory)")
-    
+
     bias_color = "🟢" if pred['sentiment_bias'] == "Bullish" else "🔴"
     st.sidebar.write(f"{bias_color} Bias: **{pred['sentiment_bias']}**")
-    
+
     if 'memory_details' in pred and pred['memory_details']:
         hist = pred['memory_details'].get('historical', 0)
         recent = pred['memory_details'].get('recent', 0)
-        
+
         # Mostrar influencia en modo barra de progreso o texto
         st.sidebar.info(f"🏛️ Historical: {hist:.4f}")
         st.sidebar.success(f"⚡ Recent: {recent:.4f}")

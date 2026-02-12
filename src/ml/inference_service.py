@@ -43,11 +43,11 @@ def run_inference():
             table = catalog.load_table("silver.realtime_vwap")
             # Escaneamos más para asegurar que tenemos suficientes de la misma moneda
             df_raw = table.scan().to_arrow().to_pylist()
-            
+
             # Filtramos los últimos 10 de Bitcoin
             btc_data = [r for r in df_raw if r["coin_id"] == "bitcoin"]
             btc_data = sorted(btc_data, key=lambda x: x["window_start"])
-            
+
             if len(btc_data) < 10:
                 print("⌛ Esperando más datos de Bitcoin en Iceberg...")
                 time.sleep(10)
@@ -62,14 +62,15 @@ def run_inference():
             gains = sum([d for d in diff if d > 0])
             losses = abs(sum([d for d in diff if d < 0]))
             rsi_bias = 0.5 if gains > losses else -0.5
-            
+
             # Obtener Fear & Greed si es posible
             fg_bias = 0.0
             try:
                 fg_table = catalog.load_table("bronze.fear_greed_index")
                 fg_data = fg_table.scan(limit=1).to_arrow().to_pylist()
                 if fg_data:
-                    fg_bias = CouncilOfAgents.sentiment_agent(int(fg_data[0]["value"]))
+                    fg_bias = CouncilOfAgents.sentiment_agent(
+                        int(fg_data[0]["value"]))
             except:
                 pass
 
@@ -77,7 +78,7 @@ def run_inference():
             p_min, p_max = min(prices), max(prices)
             denom = (p_max - p_min) if p_max > p_min else 1.0
             prices_norm = [(p - p_min) / denom for p in prices]
-            
+
             x = torch.tensor(prices_norm).view(1, 10, 1).to(device)
             # Agentes: [RSI_Bias, Sentiment_Bias]
             a_op = torch.tensor([[rsi_bias, fg_bias]]).to(device)
@@ -90,7 +91,7 @@ def run_inference():
                 # Combinación: 80% Reciente (Sensibilidad) + 20% Histórica
                 # Añadimos un pequeño factor de volatilidad para que no sea plana
                 pred_norm = (pred_r * 0.8) + (pred_h * 0.2)
-                
+
                 # De-normalizar
                 pred_final = (pred_norm * denom) + p_min
 
