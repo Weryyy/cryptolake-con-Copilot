@@ -16,21 +16,20 @@ from src.serving.api.utils import get_iceberg_catalog, get_redis_client
 def run_inference():
     device = get_device()
     redis = get_redis_client()
-    catalog = get_iceberg_catalog()
 
-    # Cargar Memoria Histórica
-    model_hist = TemporalFusionTransformer(input_dim=1).to(device)
+    # Cargar Memoria Histórica (Actualizado a input_dim=2)
+    model_hist = TemporalFusionTransformer(input_dim=2).to(device)
     if os.path.exists("models/tft_historical.pth"):
         model_hist.load_state_dict(torch.load(
             "models/tft_historical.pth", map_location=device))
-        print("✅ Memoria HISTORICA cargada.")
+        print("✅ Memoria HISTORICA cargada (v2).")
 
-    # Cargar Memoria Reciente
-    model_recent = TemporalFusionTransformer(input_dim=1).to(device)
+    # Cargar Memoria Reciente (Actualizado a input_dim=2)
+    model_recent = TemporalFusionTransformer(input_dim=2).to(device)
     if os.path.exists("models/tft_recent.pth"):
         model_recent.load_state_dict(torch.load(
             "models/tft_recent.pth", map_location=device))
-        print("✅ Memoria RECIENTE cargada.")
+        print("✅ Memoria RECIENTE cargada (v2).")
 
     model_hist.eval()
     model_recent.eval()
@@ -39,14 +38,29 @@ def run_inference():
 
     while True:
         try:
-            # 1. Obtener últimos datos (Filtramos por Bitcoin para el PoC)
-            table = catalog.load_table("silver.realtime_vwap")
-            # Escaneamos más para asegurar que tenemos suficientes de la misma moneda
-            df_raw = table.scan().to_arrow().to_pylist()
-
-            # Filtramos los últimos 10 de Bitcoin
-            btc_data = [r for r in df_raw if r["coin_id"] == "bitcoin"]
-            btc_data = sorted(btc_data, key=lambda x: x["window_start"])
+            btc_data = []
+            # 1. Intentar obtener últimos datos de Iceberg
+            try:
+                catalog = get_iceberg_catalog()
+                table = catalog.load_table("silver.realtime_vwap")
+                df_raw = table.scan().to_arrow().to_pylist()
+                btc_data = [r for r in df_raw if r["coin_id"] == "bitcoin"]
+                btc_data = sorted(btc_data, key=lambda x: x["window_start"])
+                # Mapear nombres de columnas si vienen de Iceberg
+                for r in btc_data:
+                    r["close"] = r.get("close", 0)
+                    r["total_volume"] = r.get("total_volume", 0)
+            except Exception:
+                # Fallback a local cache
+                local_path = "data/local_cache/silver_daily_prices.csv"
+                if os.path.exists(local_path):
+                    df = pd.read_csv(local_path)
+                    btc_raw = df[df["coin_id"] == "bitcoin"].to_dict("records")
+                    for r in btc_raw:
+                        btc_data.append({
+                            "close": r["price_usd"],
+                            "total_volume": r["volume_24h_usd"]
+                        })
 
             if len(btc_data) < 10:
                 print("⌛ Esperando más datos de Bitcoin en Iceberg...")
@@ -54,6 +68,7 @@ def run_inference():
                 continue
 
             prices = [r["close"] for r in btc_data[-10:]]
+            volumes = [r["total_volume"] for r in btc_data[-10:]]
             current_p = prices[-1]
 
             # 2. Opinion de Agentes (Añadir dinamismo)
@@ -74,12 +89,19 @@ def run_inference():
             except:
                 pass
 
-            # 3. Preparar inputs reales (Normalizados)
+            # 3. Preparar inputs reales (Normalizados para multivariado [Precio, Volumen])
             p_min, p_max = min(prices), max(prices)
-            denom = (p_max - p_min) if p_max > p_min else 1.0
-            prices_norm = [(p - p_min) / denom for p in prices]
+            p_denom = (p_max - p_min) if p_max > p_min else 1.0
+            prices_norm = [(p - p_min) / p_denom for p in prices]
 
-            x = torch.tensor(prices_norm).view(1, 10, 1).to(device)
+            v_min, v_max = min(volumes), max(volumes)
+            v_denom = (v_max - v_min) if v_max > v_min else 1.0
+            volumes_norm = [(v - v_min) / v_denom for v in volumes]
+
+            # Stack multivariate data: [1, 10, 2]
+            feats = [[p, v] for p, v in zip(prices_norm, volumes_norm)]
+            x = torch.tensor(feats).unsqueeze(0).to(device)
+
             # Agentes: [RSI_Bias, Sentiment_Bias]
             a_op = torch.tensor([[rsi_bias, fg_bias]]).to(device)
 
@@ -89,11 +111,10 @@ def run_inference():
                 pred_r = model_recent(x, x, a_op).item()
 
                 # Combinación: 80% Reciente (Sensibilidad) + 20% Histórica
-                # Añadimos un pequeño factor de volatilidad para que no sea plana
                 pred_norm = (pred_r * 0.8) + (pred_h * 0.2)
 
-                # De-normalizar
-                pred_final = (pred_norm * denom) + p_min
+                # De-normalizar usando el rango del precio
+                pred_final = (pred_norm * p_denom) + p_min
 
             # 5. Publicar en Redis
             result = {

@@ -15,7 +15,9 @@ cryptolake:
       host: spark-master
       port: 10001
       schema: gold
+      user: airflow
       connect_retries: 3
+      connect_timeout: 60
       connect_timeout: 60
     ci:
       type: spark

@@ -39,6 +39,7 @@ class HealthResponse(BaseModel):
 
 class PredictionResponse(BaseModel):
     timestamp: float
+    coin_id: str = "bitcoin"
     predicted_price: float
     current_price: float
     sentiment_bias: str
@@ -53,3 +54,19 @@ class OHLCResponse(BaseModel):
     close: float
     volume: float
     is_anomaly: int
+
+
+class SystemAlert(BaseModel):
+    timestamp: float
+    level: str
+    dag_id: str
+    task_id: str
+    message: str
+
+
+class DQReport(BaseModel):
+    table_name: str
+    success_rate: float
+    total_expectations: int
+    successful_expectations: int
+    timestamp: float

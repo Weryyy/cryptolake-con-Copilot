@@ -7,33 +7,32 @@
     incremental_strategy='merge'
 ) }}
 
-WITH hourly_agg AS (
+WITH base AS (
     SELECT
         coin_id,
         DATE_TRUNC('hour', from_unixtime(trade_time_ms / 1000)) AS price_hour,
-        AVG(price_usd) AS avg_price,
-        MIN(price_usd) AS min_price,
-        MAX(price_usd) AS max_price,
-        SUM(quantity) AS total_quantity,
-        COUNT(*) AS trade_count,
-        -- First and last price in the hour (OHLC-style)
-        FIRST_VALUE(price_usd) OVER (
-            PARTITION BY coin_id, DATE_TRUNC('hour', from_unixtime(trade_time_ms / 1000))
-            ORDER BY trade_time_ms
-        ) AS open_price,
-        LAST_VALUE(price_usd) OVER (
-            PARTITION BY coin_id, DATE_TRUNC('hour', from_unixtime(trade_time_ms / 1000))
-            ORDER BY trade_time_ms
-            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
-        ) AS close_price
+        price_usd,
+        quantity,
+        trade_time_ms
     FROM {{ source('bronze', 'realtime_prices') }}
     {% if is_incremental() %}
     WHERE from_unixtime(trade_time_ms / 1000) > (SELECT MAX(price_hour) FROM {{ this }})
     {% endif %}
-    GROUP BY coin_id, DATE_TRUNC('hour', from_unixtime(trade_time_ms / 1000))
+),
+hourly_agg AS (
+    SELECT
+        coin_id,
+        price_hour,
+        AVG(price_usd) OVER (PARTITION BY coin_id, price_hour) AS avg_price,
+        MIN(price_usd) OVER (PARTITION BY coin_id, price_hour) AS min_price,
+        MAX(price_usd) OVER (PARTITION BY coin_id, price_hour) AS max_price,
+        SUM(quantity) OVER (PARTITION BY coin_id, price_hour) AS total_quantity,
+        COUNT(*) OVER (PARTITION BY coin_id, price_hour) AS trade_count,
+        FIRST_VALUE(price_usd) OVER (PARTITION BY coin_id, price_hour ORDER BY trade_time_ms) AS open_price,
+        LAST_VALUE(price_usd) OVER (PARTITION BY coin_id, price_hour ORDER BY trade_time_ms ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS close_price
+    FROM base
 )
-
-SELECT
+SELECT DISTINCT
     coin_id,
     price_hour,
     avg_price,

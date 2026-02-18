@@ -46,6 +46,5 @@ async def get_prices(
 
         return [PriceResponse(**row) for row in df]
     except Exception as e:
-        # En un caso real usaríamos logs y respuestas de error apropiadas
         print(f"Error querying Iceberg: {e}")
         return []

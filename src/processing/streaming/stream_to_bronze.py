@@ -29,6 +29,8 @@ def create_spark_session() -> SparkSession:
                 "org.apache.iceberg.aws.s3.S3FileIO")
         .config("spark.sql.catalog.cryptolake.s3.endpoint", settings.minio_endpoint)
         .config("spark.sql.catalog.cryptolake.s3.path-style-access", "true")
+        .config("spark.sql.catalog.cryptolake.s3.access-key-id", settings.minio_access_key)
+        .config("spark.sql.catalog.cryptolake.s3.secret-access-key", settings.minio_secret_key)
         .config("spark.sql.extensions",
                 "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
         .config("spark.sql.defaultCatalog", "cryptolake")

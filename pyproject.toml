@@ -21,6 +21,8 @@ dependencies = [
     "dbt-core>=1.8.0",
     "dbt-spark>=1.8.0",
     "structlog>=24.1.0",
+    "torch>=2.2.0",
+    "numpy<2.0.0",
 ]
 
 [project.optional-dependencies]

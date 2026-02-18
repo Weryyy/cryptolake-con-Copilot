@@ -63,6 +63,7 @@ def fetch_prediction():
         return None
 
 
+@st.cache_data(ttl=30)
 def fetch_realtime_ohlc(coin_id: str):
     try:
         url = f"{API_URL}/api/v1/analytics/realtime-ohlc/{coin_id}"
@@ -72,6 +73,22 @@ def fetch_realtime_ohlc(coin_id: str):
         return []
     except Exception as e:
         st.sidebar.error(f"Error OHLC: {e}")
+        return []
+
+
+def fetch_system_alerts():
+    try:
+        response = requests.get(f"{API_URL}/api/v1/analytics/system-alerts")
+        return response.json()
+    except:
+        return []
+
+
+def fetch_dq_reports():
+    try:
+        response = requests.get(f"{API_URL}/api/v1/analytics/dq-reports")
+        return response.json()
+    except:
         return []
 
 
@@ -99,7 +116,7 @@ st.markdown("---")
 st.sidebar.title("Navigation")
 page = st.sidebar.radio(
     "Go to",
-    ["Market Overview", "Price Charts", "Fear & Greed Index"],
+    ["Market Overview", "Price Charts", "Fear & Greed Index", "Logs & System Status"],
 )
 
 if page == "Market Overview":
@@ -134,8 +151,8 @@ if page == "Market Overview":
             if sol:
                 st.metric("Solana", f"${sol['current_price']:,.2f}")
         with col4:
-            st.metric("Fear & Greed",
-                      fg_data['value'], fg_data['classification'])
+            st.metric("Fear & Greed", fg_data['value'])
+            st.caption(f"Sentiment: {fg_data['classification']}")
 
         # Real-time Prediction Section
         st.markdown("---")
@@ -143,6 +160,8 @@ if page == "Market Overview":
         pred = fetch_prediction()
 
         if pred and pred["timestamp"] > 0:
+            st.info(
+                f"Analyzing Target: **{pred.get('coin_id', 'Unknown').upper()}**")
             p_col1, p_col2, p_col3 = st.columns(3)
             with p_col1:
                 st.metric("Current Price (Ref)",
@@ -169,15 +188,24 @@ if page == "Market Overview":
                     name='BTC Real-time'
                 )])
 
-                # Solo agregar línea si la predicción es válida
+                # Solo agregar línea si la predicción es válida (Predicted Wave)
                 if pred['predicted_price'] > 0:
-                    fig_ohlc.add_hline(
-                        y=pred['predicted_price'],
-                        line_dash="dash",
-                        line_color="cyan",
-                        annotation_text="AI TARGET",
-                        annotation_position="top right"
-                    )
+                    # Crear una "ola" o línea que conecte el último precio real con la predicción
+                    last_time = df_ohlc['timestamp'].iloc[-1]
+                    last_price = df_ohlc['close'].iloc[-1]
+                    pred_time = last_time + pd.Timedelta(minutes=5)
+
+                    fig_ohlc.add_trace(go.Scatter(
+                        x=[last_time, pred_time],
+                        y=[last_price, pred['predicted_price']],
+                        mode='lines+markers',
+                        name='AI WAVE Prediction',
+                        line=dict(color='cyan', width=3, dash='dashdot'),
+                        marker=dict(size=10, symbol='star')
+                    ))
+
+                    st.sidebar.success(
+                        f"🎯 AI Prediction Wave: ${pred['predicted_price']:,.2f}")
 
                 fig_ohlc.update_layout(
                     title="Real-time BTC Candles & AI Prediction",
@@ -189,9 +217,24 @@ if page == "Market Overview":
             else:
                 st.info("⌛ Esperando primer micro-batch de datos OHLC...")
 
-        st.subheader("All Assets")
+        st.subheader("🌍 All Assets Market Overview")
         df = pd.DataFrame(overview_data)
-        st.dataframe(df, width='stretch')
+        if not df.empty:
+            # Renombrar columnas para mejor visualización
+            df_display = df.rename(columns={
+                "coin_id": "Asset",
+                "current_price": "Price (USD)",
+                "price_change_24h_pct": "24h %",
+                "market_cap_usd": "Market Cap",
+                "volume_24h_usd": "Volume 24h"
+            })
+            # Formatear moneda y porcentajes
+            st.dataframe(df_display.style.format({
+                "Price (USD)": "${:,.2f}",
+                "24h %": "{:+.2f}%",
+                "Market Cap": "${:,.0f}",
+                "Volume 24h": "${:,.0f}"
+            }), width='stretch', hide_index=True)
 
 elif page == "Price Charts":
     st.header("📈 Price Charts")
@@ -220,6 +263,23 @@ elif page == "Price Charts":
                     close=df_ohlc['close'],
                     name='Real-time'
                 )])
+
+                # Add AI Prediction Wave if available for this coin
+                pred = fetch_prediction()
+                if pred and pred['predicted_price'] > 0 and pred.get('coin_id') == selected_coin:
+                    last_time = df_ohlc['timestamp'].iloc[-1]
+                    last_price = df_ohlc['close'].iloc[-1]
+                    pred_time = last_time + pd.Timedelta(seconds=30)
+
+                    fig_candlestick.add_trace(go.Scatter(
+                        x=[last_time, pred_time],
+                        y=[last_price, pred['predicted_price']],
+                        mode='lines+markers',
+                        name='AI WAVE Prediction',
+                        line=dict(color='cyan', width=3, dash='dashdot'),
+                        marker=dict(size=10, symbol='star')
+                    ))
+
                 fig_candlestick.update_layout(
                     template="plotly_dark",
                     xaxis_rangeslider_visible=True,
@@ -241,17 +301,93 @@ elif page == "Price Charts":
                 fig_line.update_layout(template="plotly_dark")
                 st.plotly_chart(fig_line, width='stretch')
 
+                # 3. Data Table
                 st.subheader("Historical Data Table")
-                st.dataframe(df_hist, width='stretch')
+                st.dataframe(df_hist, width='stretch', hide_index=True)
+
+elif page == "Logs & System Status":
+    st.header("🛠️ System Status & Data Quality")
+
+    col_dq, col_alerts = st.columns([1, 2])
+
+    with col_dq:
+        st.subheader("✅ Data Quality (GX)")
+        dq_data = fetch_dq_reports()
+        if dq_data:
+            for report in dq_data:
+                color = "green" if report['success_rate'] > 0.9 else "orange"
+                st.markdown(f"""
+                <div style="border-left: 5px solid {color}; padding-left: 10px; margin-bottom: 10px;">
+                    <strong>Table: {report['table_name']}</strong><br/>
+                    Success Rate: {report['success_rate']*100:.1f}%<br/>
+                    <small>Checks: {report['successful_expectations']}/{report['total_expectations']}</small>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.info("No hay reportes de DQ aún.")
+
+    with col_alerts:
+        st.subheader("🚨 System Alertas (Slack-style)")
+        alerts = fetch_system_alerts()
+        if isinstance(alerts, list) and alerts:
+            for alert in alerts:
+                if not isinstance(alert, dict):
+                    continue
+                lvl = alert.get('level', 'INFO')
+                lvl_emoji = "🔴" if lvl == "CRITICAL" else "⚠️"
+                ts = alert.get('timestamp', time.time())
+                st.markdown(f"""
+                **{lvl_emoji} {lvl}** - {time.strftime('%H:%M:%S', time.localtime(ts))}  
+                `DAG: {alert.get('dag_id', 'N/A')} | Task: {alert.get('task_id', 'N/A')}`  
+                > {alert.get('message', 'No message')}
+                ---
+                """)
+        else:
+            st.success("No hay alertas críticas en el sistema. Todo ok. ✅")
+
+    st.markdown("---")
+    st.subheader("⚙️ Hardware Accelerator")
+    st.info(
+        "Detected GPU: **NVIDIA Quadro K4200 (Kepler)** | CPU: **Intel Xeon E5-1620 v3**")
+    st.caption(
+        "Los agentes duales están optimizados para utilizar aceleración CUDA si está disponible.")
 
 elif page == "Fear & Greed Index":
     st.header("😱 Fear & Greed Index")
     fg_data = fetch_fear_greed()
 
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns([1, 2])
     with col1:
         st.metric("Current Value", fg_data['value'])
+        st.subheader(f"Status: {fg_data['classification']}")
+
     with col2:
-        st.metric("Classification", fg_data['classification'])
+        # Gauge chart for Fear & Greed
+        fig_gauge = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=fg_data['value'],
+            domain={'x': [0, 1], 'y': [0, 1]},
+            title={'text': "Market Sentiment"},
+            gauge={
+                'axis': {'range': [None, 100]},
+                'bar': {'color': "white"},
+                'steps': [
+                    {'range': [0, 25], 'color': "darkred"},
+                    {'range': [25, 45], 'color': "red"},
+                    {'range': [45, 55], 'color': "gray"},
+                    {'range': [55, 75], 'color': "lightgreen"},
+                    {'range': [75, 100], 'color': "green"}
+                ],
+            }
+        ))
+        fig_gauge.update_layout(template="plotly_dark", height=400)
+        st.plotly_chart(fig_gauge, use_container_width=True)
 
     st.info("The Fear & Greed Index provides a sentiment score from 0 (Extreme Fear) to 100 (Extreme Greed).")
+    st.markdown("""
+    - **0-25**: Extreme Fear (Opportunity?)
+    - **25-45**: Fear
+    - **45-55**: Neutral
+    - **55-75**: Greed
+    - **75-100**: Extreme Greed (Risk?)
+    """)

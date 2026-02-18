@@ -36,68 +36,66 @@ class CoinGeckoExtractor(BaseExtractor):
         all_records: List[Dict[str, Any]] = []
 
         for i, coin_id in enumerate(settings.tracked_coins):
-            try:
-                logger.info(
-                    "extracting_coin",
-                    coin=coin_id,
-                    progress=f"{i+1}/{len(settings.tracked_coins)}",
-                    days=self.days,
-                )
+            max_retries = 3
+            success = False
+            
+            for attempt in range(max_retries):
+                try:
+                    logger.info(
+                        "extracting_coin",
+                        coin=coin_id,
+                        progress=f"{i+1}/{len(settings.tracked_coins)}",
+                        attempt=attempt + 1,
+                    )
 
-                response = self.session.get(
-                    f"{self.base_url}/coins/{coin_id}/market_chart",
-                    params={
-                        "vs_currency": "usd",
-                        "days": str(self.days),
-                        "interval": "daily",
-                    },
-                    timeout=30,
-                )
-                response.raise_for_status()
+                    # Respetar rate limit de la API gratuita (30 calls/min)
+                    import time
+                    if attempt == 0:
+                        time.sleep(2.0)
+                    else:
+                        time.sleep(10.0 * attempt)
 
-                data = response.json()
+                    response = self.session.get(
+                        f"{self.base_url}/coins/{coin_id}/market_chart",
+                        params={
+                            "vs_currency": "usd",
+                            "days": str(self.days),
+                            "interval": "daily",
+                        },
+                        timeout=30,
+                    )
+                    
+                    if response.status_code == 429:
+                        logger.warning("rate_limit_hit", coin=coin_id, attempt=attempt+1)
+                        continue
+                        
+                    response.raise_for_status()
+                    data = response.json()
 
-                prices = data.get("prices", [])
-                market_caps = data.get("market_caps", [])
-                volumes = data.get("total_volumes", [])
+                    prices = data.get("prices", [])
+                    market_caps = data.get("market_caps", [])
+                    volumes = data.get("total_volumes", [])
 
-                for idx, price_point in enumerate(prices):
-                    timestamp_ms, price = price_point
+                    for idx, price_point in enumerate(prices):
+                        timestamp_ms, price = price_point
+                        all_records.append({
+                            "coin_id": coin_id,
+                            "timestamp_ms": int(timestamp_ms),
+                            "price_usd": float(price),
+                            "market_cap_usd": float(market_caps[idx][1]) if idx < len(market_caps) else None,
+                            "volume_24h_usd": float(volumes[idx][1]) if idx < len(volumes) else None,
+                        })
 
-                    record = {
-                        "coin_id": coin_id,
-                        "timestamp_ms": int(timestamp_ms),
-                        "price_usd": float(price),
-                        "market_cap_usd": (
-                            float(market_caps[idx][1])
-                            if idx < len(market_caps) and market_caps[idx][1]
-                            else None
-                        ),
-                        "volume_24h_usd": (
-                            float(volumes[idx][1])
-                            if idx < len(volumes) and volumes[idx][1]
-                            else None
-                        ),
-                    }
-                    all_records.append(record)
+                    logger.info("coin_extracted", coin=coin_id, datapoints=len(prices))
+                    success = True
+                    break
 
-                logger.info(
-                    "coin_extracted",
-                    coin=coin_id,
-                    datapoints=len(prices),
-                )
-
-                # Rate limiting: CoinGecko free = 30 calls/min
-                if i < len(settings.tracked_coins) - 1:
-                    time.sleep(2.5)
-
-            except Exception as e:
-                logger.error(
-                    "coin_extraction_failed",
-                    coin=coin_id,
-                    error=str(e),
-                    error_type=type(e).__name__,
-                )
+                except Exception as e:
+                    logger.error("extraction_attempt_failed", coin=coin_id, attempt=attempt+1, error=str(e))
+                    if attempt == max_retries - 1:
+                        logger.error("coin_extraction_final_failure", coin=coin_id)
+            
+            if not success:
                 continue
 
         return all_records

@@ -99,6 +99,15 @@ make kafka-create-topics
 python scripts/health_check.py
 ```
 
+## 🧠 Machine Learning: Dual Memory Council
+
+CryptoLake utiliza un enfoque de **Consejo de Agentes** basado en **Temporal Fusion Transformers (TFT)** con dos modelos de entrenamiento:
+
+1.  **Memoria Histórica** (`--mode historical`): 200 épocas. Estabilidad macro.
+2.  **Memoria Reciente** (`--mode recent`): 400 épocas. Sensibilidad micro (volatilidad).
+
+Los modelos son **multivariados** (utilizan Precio + Volumen) y se sincronizan automáticamente con el contenedor de la API mediante volúmenes de Docker.
+
 ### Services Dashboard
 
 | Service | URL | Credentials |

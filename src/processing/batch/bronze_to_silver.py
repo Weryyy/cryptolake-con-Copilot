@@ -18,11 +18,21 @@ from pyspark.sql.functions import (
 )
 from pyspark.sql.window import Window
 
+from src.config.settings import settings
+
 
 def create_spark_session() -> SparkSession:
     return (
         SparkSession.builder
         .appName("CryptoLake-BronzeToSilver")
+        .config("spark.sql.catalog.cryptolake", "org.apache.iceberg.spark.SparkCatalog")
+        .config("spark.sql.catalog.cryptolake.type", "rest")
+        .config("spark.sql.catalog.cryptolake.uri", settings.iceberg_catalog_uri)
+        .config("spark.sql.catalog.cryptolake.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+        .config("spark.sql.catalog.cryptolake.s3.endpoint", settings.minio_endpoint)
+        .config("spark.sql.catalog.cryptolake.s3.path-style-access", "true")
+        .config("spark.sql.catalog.cryptolake.s3.access-key-id", settings.minio_access_key)
+        .config("spark.sql.catalog.cryptolake.s3.secret-access-key", settings.minio_secret_key)
         .config("spark.sql.extensions",
                 "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
         .config("spark.sql.defaultCatalog", "cryptolake")
@@ -33,15 +43,11 @@ def create_spark_session() -> SparkSession:
 def process_historical_prices(spark: SparkSession):
     """
     Transforma precios históricos de Bronze a Silver.
-
-    Silver schema:
-    - coin_id (STRING, PK part 1)
-    - price_date (DATE, PK part 2)
-    - price_usd (DOUBLE, cleaned)
-    - market_cap_usd (DOUBLE, cleaned)
-    - volume_24h_usd (DOUBLE, cleaned)
-    - _processed_at (TIMESTAMP)
     """
+    # Asegurar que los namespaces existan
+    spark.sql("CREATE NAMESPACE IF NOT EXISTS cryptolake.bronze")
+    spark.sql("CREATE NAMESPACE IF NOT EXISTS cryptolake.silver")
+
     # Leer Bronze
     bronze_df = spark.table("cryptolake.bronze.historical_prices")
 
@@ -128,6 +134,7 @@ def process_historical_prices(spark: SparkSession):
 
 def process_fear_greed(spark: SparkSession):
     """Transforma Fear & Greed Index de Bronze a Silver."""
+    spark.sql("CREATE NAMESPACE IF NOT EXISTS cryptolake.silver")
     bronze_df = spark.table("cryptolake.bronze.fear_greed_index")
 
     # 1. Deduplicar en Bronze antes de pasar a Silver

@@ -1,9 +1,17 @@
-from pyiceberg.catalog import load_catalog
+try:
+    from pyiceberg.catalog import load_catalog
+except ImportError:
+    load_catalog = None
 import os
-import redis
+try:
+    import redis
+except ImportError:
+    redis = None
 
 
 def get_iceberg_catalog():
+    if load_catalog is None:
+        raise ImportError("pyiceberg is not installed.")
     return load_catalog(
         "cryptolake",
         **{
@@ -18,6 +26,16 @@ def get_iceberg_catalog():
 
 
 def get_redis_client():
+    if redis is None:
+        print("⚠️ redis-py no instalado, simulando cliente...")
+
+        class MockRedis:
+            def get(self, *args): return None
+            def set(self, *args, **kwargs): pass
+            def lpush(self, *args): pass
+            def lrange(self, *args): return []
+            def keys(self, *args): return []
+        return MockRedis()
     return redis.Redis(
         host=os.getenv("REDIS_HOST", "localhost"),
         port=int(os.getenv("REDIS_PORT", 6379)),

@@ -19,7 +19,7 @@ x-common-env: &common-env
   MINIO_ACCESS_KEY: cryptolake
   MINIO_SECRET_KEY: cryptolake123
   KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-  ICEBERG_CATALOG_URI: http://iceberg-rest:8181
+  ICEBERG_CATALOG_URI: http://cryptolake-iceberg-rest:8181
   AWS_ACCESS_KEY_ID: cryptolake
   AWS_SECRET_ACCESS_KEY: cryptolake123
   AWS_REGION: us-east-1
@@ -83,8 +83,16 @@ services:
       AWS_ACCESS_KEY_ID: cryptolake
       AWS_SECRET_ACCESS_KEY: cryptolake123
       AWS_REGION: us-east-1
+      # JDBC Catalog configuration to avoid SQLite locking
+      CATALOG_CATALOG__IMPL: org.apache.iceberg.jdbc.JdbcCatalog
+      CATALOG_URI: jdbc:postgresql://airflow-postgres:5432/airflow
+      CATALOG_JDBC_URL: jdbc:postgresql://airflow-postgres:5432/airflow
+      CATALOG_JDBC_USER: airflow
+      CATALOG_JDBC_PASSWORD: airflow
     depends_on:
       minio:
+        condition: service_healthy
+      airflow-postgres:
         condition: service_healthy
 
   # ==========================================================
@@ -140,9 +148,32 @@ services:
     ports:
       - "8082:8080"
       - "7077:7077"
+      - "10001:10001"
     environment:
       <<: *common-env
-    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+      PYTHONPATH: /opt/spark/work
+      SPARK_MASTER_HOST: 0.0.0.0
+    command: >
+      /bin/bash -c "
+      /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master &
+      echo 'Waiting for Spark Master to start...' &&
+      sleep 10 &&
+      echo 'Starting Thrift Server...' &&
+      /opt/spark/sbin/start-thriftserver.sh 
+      --master spark://127.0.0.1:7077 
+      --conf spark.sql.catalog.cryptolake=org.apache.iceberg.spark.SparkCatalog 
+      --conf spark.sql.catalog.cryptolake.type=rest 
+      --conf spark.sql.catalog.cryptolake.uri=http://cryptolake-iceberg-rest:8181 
+      --conf spark.sql.catalog.cryptolake.io-impl=org.apache.iceberg.aws.s3.S3FileIO 
+      --conf spark.sql.catalog.cryptolake.s3.endpoint=http://minio:9000 
+      --conf spark.sql.catalog.cryptolake.s3.path-style-access=true 
+      --conf spark.sql.catalog.cryptolake.s3.access-key-id=cryptolake 
+      --conf spark.sql.catalog.cryptolake.s3.secret-access-key=cryptolake123 
+      --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions 
+      --conf spark.sql.defaultCatalog=cryptolake 
+      --conf spark.hadoop.hive.server2.thrift.port=10001;
+      sleep infinity
+      "
     volumes:
       - ./src:/opt/spark/work/src
 
@@ -154,6 +185,7 @@ services:
     environment:
       <<: *common-env
       SPARK_MASTER_URL: spark://spark-master:7077
+      PYTHONPATH: /opt/spark/work
       SPARK_WORKER_MEMORY: 4g
       SPARK_WORKER_CORES: 4
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
@@ -268,6 +300,7 @@ services:
       AIRFLOW__WEBSERVER__SECRET_KEY: cryptolake-secret-key
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      PYTHONPATH: /opt/airflow
     volumes:
       - ./src/orchestration/dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
@@ -289,6 +322,7 @@ services:
       AIRFLOW__CORE__FERNET_KEY: ''
       AIRFLOW__WEBSERVER__SECRET_KEY: cryptolake-secret-key
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      PYTHONPATH: /opt/airflow
     volumes:
       - ./src/orchestration/dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
@@ -312,8 +346,10 @@ services:
     environment:
       <<: *common-env
       PYTHONUNBUFFERED: "1"
+      PYTHONPATH: /app
     volumes:
       - ./src:/app/src
+      - ./models:/app/models
 
   dashboard:
     image: python:3.11-slim
