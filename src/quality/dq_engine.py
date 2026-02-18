@@ -38,9 +38,10 @@ def validate_table(table_name, suite_name):
             # En producción usaríamos el RuntimeBatchRequest con Spark
 
         # 3. Ejecutar validación (Compatibilidad con GX 1.x)
-        datasource = context.data_sources.add_pandas(name=f"ds_{int(time.time())}")
+        datasource = context.data_sources.add_pandas(
+            name=f"ds_{int(time.time())}")
         asset = datasource.add_dataframe_asset(name="manual_asset")
-        
+
         # En GX 1.x necesitamos definir un batch
         batch_def = asset.add_batch_definition_whole_dataframe("all_data")
         batch = batch_def.get_batch(batch_parameters={"dataframe": df})

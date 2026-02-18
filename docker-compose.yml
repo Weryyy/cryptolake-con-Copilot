@@ -154,26 +154,7 @@ services:
       PYTHONPATH: /opt/spark/work
       SPARK_MASTER_HOST: 0.0.0.0
     command: >
-      /bin/bash -c "
-      /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master &
-      echo 'Waiting for Spark Master to start...' &&
-      sleep 10 &&
-      echo 'Starting Thrift Server...' &&
-      /opt/spark/sbin/start-thriftserver.sh 
-      --master spark://127.0.0.1:7077 
-      --conf spark.sql.catalog.cryptolake=org.apache.iceberg.spark.SparkCatalog 
-      --conf spark.sql.catalog.cryptolake.type=rest 
-      --conf spark.sql.catalog.cryptolake.uri=http://cryptolake-iceberg-rest:8181 
-      --conf spark.sql.catalog.cryptolake.io-impl=org.apache.iceberg.aws.s3.S3FileIO 
-      --conf spark.sql.catalog.cryptolake.s3.endpoint=http://minio:9000 
-      --conf spark.sql.catalog.cryptolake.s3.path-style-access=true 
-      --conf spark.sql.catalog.cryptolake.s3.access-key-id=cryptolake 
-      --conf spark.sql.catalog.cryptolake.s3.secret-access-key=cryptolake123 
-      --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions 
-      --conf spark.sql.defaultCatalog=cryptolake 
-      --conf spark.hadoop.hive.server2.thrift.port=10001;
-      sleep infinity
-      "
+      /bin/bash -c " /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master & echo 'Waiting for Spark Master to start...' && sleep 10 && echo 'Starting Thrift Server...' && /opt/spark/sbin/start-thriftserver.sh  --master spark://127.0.0.1:7077  --conf spark.sql.catalog.cryptolake=org.apache.iceberg.spark.SparkCatalog  --conf spark.sql.catalog.cryptolake.type=rest  --conf spark.sql.catalog.cryptolake.uri=http://cryptolake-iceberg-rest:8181  --conf spark.sql.catalog.cryptolake.io-impl=org.apache.iceberg.aws.s3.S3FileIO  --conf spark.sql.catalog.cryptolake.s3.endpoint=http://minio:9000  --conf spark.sql.catalog.cryptolake.s3.path-style-access=true  --conf spark.sql.catalog.cryptolake.s3.access-key-id=cryptolake  --conf spark.sql.catalog.cryptolake.s3.secret-access-key=cryptolake123  --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions  --conf spark.sql.defaultCatalog=cryptolake  --conf spark.hadoop.hive.server2.thrift.port=10001; sleep infinity "
     volumes:
       - ./src:/opt/spark/work/src
 

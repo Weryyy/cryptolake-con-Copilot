@@ -40,7 +40,7 @@ def load_historical_prices(spark: SparkSession):
     """Extrae precios históricos de CoinGecko y los carga a Bronze."""
     # Asegurar que el namespace existe
     spark.sql("CREATE NAMESPACE IF NOT EXISTS cryptolake.bronze")
-    
+
     # Crear tabla si no existe (con schema explícito)
     spark.sql("""
         CREATE TABLE IF NOT EXISTS cryptolake.bronze.historical_prices (
@@ -75,7 +75,7 @@ def load_historical_prices(spark: SparkSession):
 def load_fear_greed(spark: SparkSession):
     """Extrae Fear & Greed Index y lo carga a Bronze."""
     spark.sql("CREATE NAMESPACE IF NOT EXISTS cryptolake.bronze")
-    
+
     spark.sql("""
         CREATE TABLE IF NOT EXISTS cryptolake.bronze.fear_greed_index (
             value INT,

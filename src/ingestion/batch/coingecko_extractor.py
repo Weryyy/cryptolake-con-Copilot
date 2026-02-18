@@ -38,7 +38,7 @@ class CoinGeckoExtractor(BaseExtractor):
         for i, coin_id in enumerate(settings.tracked_coins):
             max_retries = 3
             success = False
-            
+
             for attempt in range(max_retries):
                 try:
                     logger.info(
@@ -64,11 +64,12 @@ class CoinGeckoExtractor(BaseExtractor):
                         },
                         timeout=30,
                     )
-                    
+
                     if response.status_code == 429:
-                        logger.warning("rate_limit_hit", coin=coin_id, attempt=attempt+1)
+                        logger.warning("rate_limit_hit",
+                                       coin=coin_id, attempt=attempt+1)
                         continue
-                        
+
                     response.raise_for_status()
                     data = response.json()
 
@@ -86,15 +87,18 @@ class CoinGeckoExtractor(BaseExtractor):
                             "volume_24h_usd": float(volumes[idx][1]) if idx < len(volumes) else None,
                         })
 
-                    logger.info("coin_extracted", coin=coin_id, datapoints=len(prices))
+                    logger.info("coin_extracted", coin=coin_id,
+                                datapoints=len(prices))
                     success = True
                     break
 
                 except Exception as e:
-                    logger.error("extraction_attempt_failed", coin=coin_id, attempt=attempt+1, error=str(e))
+                    logger.error("extraction_attempt_failed",
+                                 coin=coin_id, attempt=attempt+1, error=str(e))
                     if attempt == max_retries - 1:
-                        logger.error("coin_extraction_final_failure", coin=coin_id)
-            
+                        logger.error(
+                            "coin_extraction_final_failure", coin=coin_id)
+
             if not success:
                 continue
 

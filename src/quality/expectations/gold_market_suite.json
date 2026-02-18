@@ -1,39 +1,39 @@
 {
-  "data_asset_type": null,
-  "expectation_suite_name": "gold_market_suite",
-  "expectations": [
-    {
-      "expectation_type": "expect_column_values_to_not_be_null",
-      "kwargs": {
-        "column": "coin_id"
-      },
-      "meta": {}
-    },
-    {
-      "expectation_type": "expect_column_values_to_not_be_null",
-      "kwargs": {
-        "column": "price_usd"
-      },
-      "meta": {}
-    },
-    {
-      "expectation_type": "expect_column_values_to_be_between",
-      "kwargs": {
-        "column": "price_usd",
-        "min_value": 0.00000001
-      },
-      "meta": {}
-    }
-  ],
-  "ge_cloud_id": null,
-  "meta": {
-    "citations": [
-      {
-        "citation_date": "2024-01-01T00:00:00.000000Z",
-        "comment": "Initial gold suite",
-        "batch_request": null
-      }
+    "data_asset_type": null,
+    "expectation_suite_name": "gold_market_suite",
+    "expectations": [
+        {
+            "expectation_type": "expect_column_values_to_not_be_null",
+            "kwargs": {
+                "column": "coin_id"
+            },
+            "meta": {}
+        },
+        {
+            "expectation_type": "expect_column_values_to_not_be_null",
+            "kwargs": {
+                "column": "price_usd"
+            },
+            "meta": {}
+        },
+        {
+            "expectation_type": "expect_column_values_to_be_between",
+            "kwargs": {
+                "column": "price_usd",
+                "min_value": 0.00000001
+            },
+            "meta": {}
+        }
     ],
-    "great_expectations_version": "0.18.0"
-  }
+    "ge_cloud_id": null,
+    "meta": {
+        "citations": [
+            {
+                "citation_date": "2024-01-01T00:00:00.000000Z",
+                "comment": "Initial gold suite",
+                "batch_request": null
+            }
+        ],
+        "great_expectations_version": "0.18.0"
+    }
 }
