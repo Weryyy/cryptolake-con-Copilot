@@ -137,7 +137,7 @@ async def get_fear_greed():
 @router.get("/analytics/realtime-ohlc/{coin_id}", response_model=list[OHLCResponse])
 async def get_realtime_ohlc(coin_id: str):
     """Obtiene datos OHLC en tiempo real para un asset (últimas 4 horas).
-    
+
     Lee directamente de silver.realtime_vwap con refresh forzado
     para garantizar datos con máximo 5 minutos de lag.
     Optimizado: ambos filtros (tiempo + coin_id) se aplican en el scan.
