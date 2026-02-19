@@ -73,6 +73,7 @@ with DAG(
     schedule="0 6 * * *",
     start_date=datetime(2025, 1, 1),
     catchup=False,
+    max_active_runs=1,
     tags=["cryptolake", "production"],
     doc_md=__doc__,
 ) as dag:
@@ -99,6 +100,7 @@ with DAG(
             task_id="api_to_bronze",
             bash_command=(
                 "spark-submit --master spark://spark-master:7077 "
+                "--conf spark.cores.max=1 --conf spark.executor.memory=1g "
                 "--packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.2,"
                 "org.apache.iceberg:iceberg-aws-bundle:1.5.2 "
                 "/opt/airflow/src/processing/batch/api_to_bronze.py"
@@ -112,6 +114,7 @@ with DAG(
             task_id="bronze_to_silver",
             bash_command=(
                 "spark-submit --master spark://spark-master:7077 "
+                "--conf spark.cores.max=1 --conf spark.executor.memory=1g "
                 "--packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.2,"
                 "org.apache.iceberg:iceberg-aws-bundle:1.5.2 "
                 "/opt/airflow/src/processing/batch/bronze_to_silver.py"

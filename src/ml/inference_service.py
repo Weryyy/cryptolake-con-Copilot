@@ -113,8 +113,19 @@ def run_inference():
                 # Combinación: 80% Reciente (Sensibilidad) + 20% Histórica
                 pred_norm = (pred_r * 0.8) + (pred_h * 0.2)
 
+                # Seguridad: Limitar la predicción normalizada para evitar explosiones (clipping)
+                # Si el modelo se vuelve loco, esto lo mantiene en un rango razonable respecto al histórico
+                pred_norm = max(-0.5, min(1.5, pred_norm))
+
                 # De-normalizar usando el rango del precio
                 pred_final = (pred_norm * p_denom) + p_min
+
+                # Seguridad Extra: No permitir variaciones bruscas (>10% en una predicción)
+                max_change = current_p * 0.10
+                if pred_final > current_p + max_change:
+                    pred_final = current_p + max_change
+                elif pred_final < current_p - max_change:
+                    pred_final = current_p - max_change
 
             # 5. Publicar en Redis
             result = {

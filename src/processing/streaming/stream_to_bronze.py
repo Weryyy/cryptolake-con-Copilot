@@ -34,6 +34,8 @@ def create_spark_session() -> SparkSession:
         .config("spark.sql.extensions",
                 "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
         .config("spark.sql.defaultCatalog", "cryptolake")
+        .config("spark.sql.shuffle.partitions", "2")
+        .config("spark.sql.session.timeZone", "UTC")
         .getOrCreate()
     )
 
@@ -114,7 +116,7 @@ def run_streaming_job():
         .outputMode("append")
         .option("path", "bronze.realtime_prices")
         .option("checkpointLocation", "checkpoints/stream_to_bronze")
-        .trigger(processingTime="30 seconds")
+        .trigger(processingTime="10 seconds")
         .start()
     )
 

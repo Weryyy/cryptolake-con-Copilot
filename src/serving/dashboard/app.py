@@ -220,6 +220,8 @@ if page == "Market Overview":
         st.subheader("🌍 All Assets Market Overview")
         df = pd.DataFrame(overview_data)
         if not df.empty:
+            # Asegurar que no haya nulos antes de formatear
+            df = df.fillna(0)
             # Renombrar columnas para mejor visualización
             df_display = df.rename(columns={
                 "coin_id": "Asset",

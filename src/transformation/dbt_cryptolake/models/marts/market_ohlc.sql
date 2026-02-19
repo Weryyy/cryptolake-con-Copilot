@@ -11,11 +11,11 @@ WITH base_prices AS (
     SELECT 
         coin_id,
         price_usd,
-        volume_24h_usd,
+        quantity as volume_24h_usd,
         _spark_ingested_at as processed_at
     FROM {{ source('bronze', 'realtime_prices') }}
     {% if is_incremental() %}
-        WHERE _spark_ingested_at > (SELECT max(processed_at) FROM {{ this }})
+        WHERE _spark_ingested_at > (SELECT coalesce(max(processed_at), cast('1970-01-01' as timestamp)) FROM {{ this }})
     {% endif %}
 ),
 

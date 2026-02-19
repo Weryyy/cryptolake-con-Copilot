@@ -120,7 +120,11 @@ Los modelos son **multivariados** (utilizan Precio + Volumen) y se sincronizan a
 | **Dashboard** | http://localhost:8501 | — |
 | **Grafana** | http://localhost:3000 | `admin` / `cryptolake` |
 
-## 📊 Data Model
+## �️ Troubleshooting
+
+Si encuentras problemas al levantar el entorno (errores de Spark, fallos de dependencias en Airflow o el Dashboard), consulta el documento de [Troubleshooting Log](docs/troubleshooting_log.md). Contiene una lista de errores comunes y sus soluciones técnicas.
+
+## �📊 Data Model
 
 ### Medallion Architecture
 

@@ -57,7 +57,7 @@ def load_historical_prices(spark: SparkSession):
         PARTITIONED BY (coin_id)
     """)
 
-    extractor = CoinGeckoExtractor(days=90)
+    extractor = CoinGeckoExtractor(days=7)
     records = extractor.run()
 
     if not records:
@@ -89,7 +89,7 @@ def load_fear_greed(spark: SparkSession):
         USING iceberg
     """)
 
-    extractor = FearGreedExtractor(days=90)
+    extractor = FearGreedExtractor(days=7)
     records = extractor.run()
 
     if not records:

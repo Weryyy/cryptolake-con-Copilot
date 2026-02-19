@@ -30,6 +30,8 @@ def create_spark_session():
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.sql.defaultCatalog", "cryptolake")
+        .config("spark.sql.shuffle.partitions", "2")
+        .config("spark.sql.session.timeZone", "UTC")
         .getOrCreate()
     )
 
@@ -45,16 +47,16 @@ def run_vwap_job():
         .load("bronze.realtime_prices")
     )
 
-    # 2. Agregar por ventana de 1 minuto
+    # 2. Agregar por ventana de 30 segundos
     # Calculamos VWAP = Sum(Price * Volume) / Sum(Volume)
     aggregated_df = (
         stream_df
         .withColumn("timestamp", (col("trade_time_ms")/1000).cast("timestamp"))
         .withColumn("notional", col("price_usd") * col("quantity"))
-        .withWatermark("timestamp", "2 minutes")
+        .withWatermark("timestamp", "1 minute")
         .groupBy(
             col("coin_id"),
-            window(col("timestamp"), "1 minute")
+            window(col("timestamp"), "30 seconds")
         )
         .agg(
             (sum("notional") / sum("quantity")).alias("vwap"),
@@ -117,7 +119,7 @@ def run_vwap_job():
         .outputMode("append")
         .option("path", "silver.realtime_vwap")
         .option("checkpointLocation", "s3a://cryptolake-checkpoints/silver_vwap")
-        .trigger(processingTime="1 minute")
+        .trigger(processingTime="10 seconds")
         .start()
     )
 

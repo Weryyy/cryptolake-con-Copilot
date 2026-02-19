@@ -1,8 +1,9 @@
 """Analytics endpoints."""
 import json
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter
 from src.serving.api.models.schemas import FearGreedResponse, MarketOverview, PredictionResponse, OHLCResponse, SystemAlert, DQReport
-from src.serving.api.utils import get_iceberg_catalog, get_redis_client
+from src.serving.api.utils import get_redis_client, load_fresh_table, make_iso_filter
 import pyarrow.compute as pc
 
 router = APIRouter(tags=["Analytics"])
@@ -54,7 +55,11 @@ async def get_prediction():
 
 @router.get("/analytics/market-overview", response_model=list[MarketOverview])
 async def get_market_overview():
-    """Overview del mercado crypto con últimos precios y cambios."""
+    """Overview del mercado crypto con últimos precios y cambios.
+
+    Optimizado: solo lee los últimos 7 días en vez de toda la tabla,
+    y selecciona únicamente las columnas necesarias.
+    """
     redis = get_redis_client()
 
     # Intentar leer de caché primero
@@ -63,12 +68,22 @@ async def get_market_overview():
         return [MarketOverview(**item) for item in json.loads(cached_data)]
 
     try:
-        catalog = get_iceberg_catalog()
-        table = catalog.load_table("silver.daily_prices")
-        df_arrow = table.scan().to_arrow()
+        from datetime import date, timedelta
+        table = load_fresh_table("silver.daily_prices")
+        recent_date = (date.today() - timedelta(days=7)).isoformat()
+        row_filter = f"price_date >= '{recent_date}'"
+        # Solo leer columnas que existen en la tabla
+        available_cols = {f.name for f in table.schema().fields}
+        want_cols = ["coin_id", "price_date", "price_usd",
+                     "price_change_pct_1d", "market_cap_usd", "volume_24h_usd"]
+        fields = tuple(c for c in want_cols if c in available_cols)
+        df_arrow = table.scan(
+            row_filter=row_filter,
+            selected_fields=fields,
+        ).to_arrow()
 
         if len(df_arrow) == 0:
-            raise Exception("No data in table")
+            raise Exception("No data in table for last 7 days")
 
         coins = df_arrow.column("coin_id").unique().to_pylist()
         overview = []
@@ -87,19 +102,22 @@ async def get_market_overview():
         return overview
     except Exception as e:
         print(f"Error querying Lake: {e}")
-        # Retornar vacío para forzar la visualización de datos reales una vez ingestados
         return []
 
 
 @router.get("/analytics/fear-greed", response_model=FearGreedResponse)
 async def get_fear_greed():
-    """Último valor del Fear & Greed Index."""
-    try:
-        catalog = get_iceberg_catalog()
-        table = catalog.load_table("bronze.fear_greed_index")
+    """Último valor del Fear & Greed Index.
 
-        # Obtenemos el último registro
-        rows = table.scan().to_arrow().to_pylist()
+    Optimizado: solo lee las columnas necesarias.
+    """
+    try:
+        table = load_fresh_table("bronze.fear_greed_index")
+
+        # Solo seleccionar columnas que necesitamos
+        rows = table.scan(
+            selected_fields=("value", "classification", "timestamp"),
+        ).to_arrow().to_pylist()
         if not rows:
             return FearGreedResponse(value=50, classification="Neutral", timestamp=0)
 
@@ -118,36 +136,40 @@ async def get_fear_greed():
 
 @router.get("/analytics/realtime-ohlc/{coin_id}", response_model=list[OHLCResponse])
 async def get_realtime_ohlc(coin_id: str):
-    """Obtiene datos OHLC en tiempo real para un asset."""
-    filtered_df = []
-    try:
-        catalog = get_iceberg_catalog()
-        table = catalog.load_table("silver.realtime_vwap")
-        df = table.scan().to_arrow()
+    """Obtiene datos OHLC en tiempo real para un asset (últimas 4 horas).
+    
+    Lee directamente de silver.realtime_vwap con refresh forzado
+    para garantizar datos con máximo 5 minutos de lag.
+    Optimizado: ambos filtros (tiempo + coin_id) se aplican en el scan.
+    """
+    now_utc = datetime.now(timezone.utc)
+    since_dt = now_utc - timedelta(hours=4)
+    time_filter = make_iso_filter("window_start", ">=", since_dt)
+    row_filter = f"coin_id == '{coin_id}' AND {time_filter}"
 
-        mask = pc.equal(df.column("coin_id"), coin_id)
-        filtered_df = df.filter(mask).to_pylist()
+    ohlc_fields = ("window_start", "coin_id", "open", "high", "low",
+                   "close", "total_volume", "is_anomaly")
+
+    try:
+        table = load_fresh_table("silver.realtime_vwap")
+        available_cols = {f.name for f in table.schema().fields}
+        fields = tuple(f for f in ohlc_fields if f in available_cols)
+        filtered_df = table.scan(
+            row_filter=row_filter,
+            selected_fields=fields,
+        ).to_arrow().to_pylist()
+
         if not filtered_df:
-            raise Exception("No data")
-    except Exception:
-        # FALLBACK: Generar velas sintéticas para la demo
-        import numpy as np
-        from datetime import datetime, timedelta
-        base_p = 52100.0 if coin_id == "bitcoin" else 2800.0
-        now = datetime.now()
-        for i in range(30):
-            t = (now - timedelta(minutes=30-i)).isoformat()
-            o = base_p + np.random.normal(0, 100)
-            c = o + np.random.normal(0, 100)
-            filtered_df.append({
-                "window_start": t,
-                "open": o,
-                "high": max(o, c) + 50,
-                "low": min(o, c) - 50,
-                "close": c,
-                "total_volume": 5000,
-                "is_anomaly": 0
-            })
+            # Sin filtro de tiempo como respaldo
+            fallback_filter = f"coin_id == '{coin_id}'"
+            filtered_df = table.scan(
+                row_filter=fallback_filter,
+                selected_fields=fields,
+            ).to_arrow().to_pylist()
+
+    except Exception as e:
+        print(f"ERROR realtime-ohlc [{coin_id}]: {type(e).__name__}: {e}")
+        return []
 
     # Mapear a esquema de respuesta
     return [

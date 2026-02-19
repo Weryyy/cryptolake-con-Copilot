@@ -4,7 +4,7 @@ cryptolake:
     dev:
       type: spark
       method: thrift
-      host: localhost
+      host: spark-master
       port: 10001
       schema: gold
       connect_retries: 3
