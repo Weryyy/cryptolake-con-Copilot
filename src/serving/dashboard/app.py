@@ -292,7 +292,8 @@ if page == "Market Overview":
                                 y=curve_prices,
                                 mode='lines+markers',
                                 name='Ensemble Curve',
-                                line=dict(color='magenta', width=2, dash='dot'),
+                                line=dict(color='magenta',
+                                          width=2, dash='dot'),
                                 marker=dict(size=6, symbol='diamond')
                             ))
                         elif ens.get('predicted_price', 0) > 0:
@@ -302,7 +303,8 @@ if page == "Market Overview":
                                 y=[last_price, ens['predicted_price']],
                                 mode='lines+markers',
                                 name='Ensemble',
-                                line=dict(color='magenta', width=2, dash='dot'),
+                                line=dict(color='magenta',
+                                          width=2, dash='dot'),
                                 marker=dict(size=8, symbol='diamond')
                             ))
 
@@ -468,7 +470,8 @@ elif page == "Price Charts":
                                 x=ct, y=cp,
                                 mode='lines+markers',
                                 name='Ensemble Curve',
-                                line=dict(color='magenta', width=2, dash='dot'),
+                                line=dict(color='magenta',
+                                          width=2, dash='dot'),
                                 marker=dict(size=6, symbol='diamond')
                             ))
                 else:

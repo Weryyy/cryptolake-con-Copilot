@@ -166,7 +166,8 @@ def train_ensemble():
 
     # -- 1. Cargar datos --
     print("\n[DATA] Cargando datos realtime (30s candles, maximo disponible)...")
-    df_rt = load_realtime_data("bitcoin")  # sin filtro de horas = todos los datos
+    # sin filtro de horas = todos los datos
+    df_rt = load_realtime_data("bitcoin")
 
     print("[DATA] Cargando datos diarios (macro context)...")
     df_daily = load_daily_data("bitcoin")

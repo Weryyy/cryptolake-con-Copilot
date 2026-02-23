@@ -82,7 +82,8 @@ def load_ensemble_models(device):
                     torch.load(lstm_path, map_location=device))
                 lstm.eval()
                 models["lstm"] = lstm
-                print(f"[OK] ReturnLSTM cargado (hidden={hidden_dim}): {lstm_path}")
+                print(
+                    f"[OK] ReturnLSTM cargado (hidden={hidden_dim}): {lstm_path}")
                 loaded = True
                 break
             except RuntimeError:
@@ -114,7 +115,8 @@ def load_legacy_models(device):
     for mode in ["historical", "recent"]:
         path = f"models/tft_{mode}.pth"
         if os.path.exists(path):
-            model = TemporalFusionTransformer(input_dim=4, agent_dim=2).to(device)
+            model = TemporalFusionTransformer(
+                input_dim=4, agent_dim=2).to(device)
             model.load_state_dict(torch.load(path, map_location=device))
             model.eval()
             models[mode] = model
@@ -250,7 +252,8 @@ def ensemble_predict(models, features_matrix, device):
     else:
         # Estimar retorno basado en direccion y volatilidad reciente
         returns = np.diff(features_matrix[:, 0])  # return_1 en col 0
-        avg_abs_return = np.abs(returns[-10:]).mean() if len(returns) >= 10 else 0.001
+        avg_abs_return = np.abs(
+            returns[-10:]).mean() if len(returns) >= 10 else 0.001
         direction = 1.0 if direction_prob > 0.5 else -1.0
         predicted_return = direction * avg_abs_return
 
@@ -387,12 +390,14 @@ def legacy_predict(models, prices, volumes, fg_val, device):
         if not preds:
             return None
 
-    pred_norm = preds[0] * 0.8 + (preds[1] if len(preds) > 1 else preds[0]) * 0.2
+    pred_norm = preds[0] * 0.8 + \
+        (preds[1] if len(preds) > 1 else preds[0]) * 0.2
     pred_norm = max(-0.5, min(1.5, pred_norm))
     pred_final = (pred_norm * p_denom) + p_min
     current_price = prices_arr[-1]
     max_change = current_price * 0.10
-    pred_final = np.clip(pred_final, current_price - max_change, current_price + max_change)
+    pred_final = np.clip(pred_final, current_price -
+                         max_change, current_price + max_change)
 
     # Correccion de sesgo bearish sistematico del Legacy TFT
     # El modelo tiende a predecir 0.15-0.40% por debajo del real.
@@ -596,7 +601,8 @@ def run_inference():
 
     # Cargar ambos modelos
     legacy = load_legacy_models(device)
-    has_legacy = legacy.get("recent") is not None or legacy.get("historical") is not None
+    has_legacy = legacy.get("recent") is not None or legacy.get(
+        "historical") is not None
 
     ensemble = load_ensemble_models(device)
     has_ensemble = ensemble is not None
@@ -726,7 +732,8 @@ def run_inference():
                         confidence = base_pred["confidence"]
                         predicted_return = np.clip(
                             base_pred["predicted_return"], -0.05, 0.05)
-                        pred_final_ens = current_price * (1.0 + predicted_return)
+                        pred_final_ens = current_price * \
+                            (1.0 + predicted_return)
 
                         # Filtro de confianza
                         if confidence < conf_threshold:

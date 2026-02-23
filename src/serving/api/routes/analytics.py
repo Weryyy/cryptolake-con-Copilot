@@ -143,6 +143,7 @@ async def get_prediction_accuracy():
         return PredictionAccuracy()
     return PredictionAccuracy(**json.loads(data))
 
+
 @router.get("/analytics/dual-prediction", response_model=DualPredictionResponse)
 async def get_dual_prediction():
     """Predicciones de ambos modelos (Legacy TFT + Ensemble) en paralelo.
@@ -196,6 +197,7 @@ async def get_model_comparison():
         legacy=json.loads(legacy_acc) if legacy_acc else None,
         ensemble=json.loads(ensemble_acc) if ensemble_acc else None,
     )
+
 
 @router.get("/analytics/market-overview", response_model=list[MarketOverview])
 async def get_market_overview():
