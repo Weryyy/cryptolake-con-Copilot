@@ -146,7 +146,8 @@ class TemporalFusionTransformer(nn.Module):
     def __init__(self, input_dim=4, agent_dim=2):
         super(TemporalFusionTransformer, self).__init__()
         self.lstm_long = nn.LSTM(input_dim, 48, batch_first=True, num_layers=1)
-        self.lstm_short = nn.LSTM(input_dim, 24, batch_first=True, num_layers=1)
+        self.lstm_short = nn.LSTM(
+            input_dim, 24, batch_first=True, num_layers=1)
         self.fc_agents = nn.Linear(agent_dim, 12)
         self.dropout = nn.Dropout(0.1)
 

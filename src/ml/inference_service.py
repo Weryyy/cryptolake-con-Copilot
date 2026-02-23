@@ -60,7 +60,8 @@ def get_fear_greed(catalog):
             selected_fields=("value", "timestamp"),
         ).to_arrow().to_pylist()
         if rows:
-            latest = sorted(rows, key=lambda x: x["timestamp"], reverse=True)[0]
+            latest = sorted(
+                rows, key=lambda x: x["timestamp"], reverse=True)[0]
             return int(latest["value"])
     except Exception:
         pass
@@ -148,8 +149,10 @@ def run_inference():
                 prices, volumes, window_size=10
             )
 
-            x = torch.tensor(feats, dtype=torch.float32).unsqueeze(0).to(device)
-            a_op = torch.tensor([[tech_signal, sent_signal]], dtype=torch.float32).to(device)
+            x = torch.tensor(
+                feats, dtype=torch.float32).unsqueeze(0).to(device)
+            a_op = torch.tensor([[tech_signal, sent_signal]],
+                                dtype=torch.float32).to(device)
 
             # 4. Inferencia dual
             with torch.no_grad():

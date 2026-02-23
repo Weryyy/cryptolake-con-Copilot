@@ -47,7 +47,8 @@ def load_daily_data(coin_id="bitcoin", days=None):
             row_filter = f"coin_id == '{coin_id}'"
         df = table.scan(
             row_filter=row_filter,
-            selected_fields=("coin_id", "price_date", "price_usd", "volume_24h_usd"),
+            selected_fields=("coin_id", "price_date",
+                             "price_usd", "volume_24h_usd"),
         ).to_arrow().to_pandas()
         df = df.sort_values("price_date").reset_index(drop=True)
         return df
@@ -73,7 +74,8 @@ def load_realtime_data(coin_id="bitcoin", hours=None):
             row_filter += f" AND window_start >= '{since.isoformat()}'"
         df = table.scan(
             row_filter=row_filter,
-            selected_fields=("coin_id", "window_start", "close", "total_volume"),
+            selected_fields=("coin_id", "window_start",
+                             "close", "total_volume"),
         ).to_arrow().to_pandas()
         df = df.sort_values("window_start").reset_index(drop=True)
         if len(df) < 2:
@@ -105,7 +107,8 @@ def get_fear_greed_value():
             selected_fields=("value", "timestamp"),
         ).to_arrow().to_pylist()
         if rows:
-            latest = sorted(rows, key=lambda x: x["timestamp"], reverse=True)[0]
+            latest = sorted(
+                rows, key=lambda x: x["timestamp"], reverse=True)[0]
             return int(latest["value"])
     except Exception:
         pass
@@ -239,7 +242,8 @@ def train(mode="historical"):
             df = None
 
     if df is None or len(df) < 15:
-        print(f"❌ No hay suficientes datos para modo {mode}. Min 15 registros.")
+        print(
+            f"❌ No hay suficientes datos para modo {mode}. Min 15 registros.")
         return
 
     print(f"🧠 Entrenando MEMORIA {mode.upper()} con {len(df)} registros")
@@ -249,13 +253,15 @@ def train(mode="historical"):
     volumes = df["volume_24h_usd"].fillna(0).values
     window_size = min(10, len(prices) // 3)
 
-    X_np, Y_np, agents_np, norm_info = build_features(prices, volumes, window_size)
+    X_np, Y_np, agents_np, norm_info = build_features(
+        prices, volumes, window_size)
     if len(X_np) < 3:
         print(f"❌ Muy pocas secuencias ({len(X_np)}). Necesitas más datos.")
         return
 
     print(f"   Secuencias: {len(X_np)} | Window: {window_size} | Features: 4")
-    print(f"   Price range: ${norm_info['p_min']:,.2f} - ${norm_info['p_max']:,.2f}")
+    print(
+        f"   Price range: ${norm_info['p_min']:,.2f} - ${norm_info['p_max']:,.2f}")
 
     # ── Train/Val split (80/20) ──
     split_idx = max(1, int(len(X_np) * 0.8))
@@ -277,7 +283,8 @@ def train(mode="historical"):
     dataset = TensorDataset(X_t, Y_t, A_t)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    print(f"   Train: {len(X_train)} | Val: {len(X_val)} | Batch: {batch_size}")
+    print(
+        f"   Train: {len(X_train)} | Val: {len(X_val)} | Batch: {batch_size}")
 
     # ── Modelo ──
     model = TemporalFusionTransformer(input_dim=4, agent_dim=2).to(device)
@@ -294,7 +301,8 @@ def train(mode="historical"):
     patience_counter = 0
     early_stop_patience = 50
 
-    print(f"🚀 Entrenamiento: {epochs} epochs, lr={lr}, early_stop={early_stop_patience}")
+    print(
+        f"🚀 Entrenamiento: {epochs} epochs, lr={lr}, early_stop={early_stop_patience}")
     start_time = time.time()
 
     for epoch in range(epochs):
@@ -342,11 +350,13 @@ def train(mode="historical"):
             )
 
         if patience_counter >= early_stop_patience:
-            print(f"⏹️  Early stopping en epoch {epoch} (sin mejora en {early_stop_patience} epochs)")
+            print(
+                f"⏹️  Early stopping en epoch {epoch} (sin mejora en {early_stop_patience} epochs)")
             break
 
     total_time = time.time() - start_time
-    print(f"🏁 Entrenamiento completado en {str(timedelta(seconds=int(total_time)))}")
+    print(
+        f"🏁 Entrenamiento completado en {str(timedelta(seconds=int(total_time)))}")
 
     # ── Guardar mejor modelo ──
     if best_state is not None:
@@ -355,7 +365,8 @@ def train(mode="historical"):
     os.makedirs("models", exist_ok=True)
     save_path = f"models/tft_{mode}.pth"
     torch.save(model.state_dict(), save_path)
-    print(f"✅ Modelo {mode} guardado: {save_path} (val_loss={best_val_loss:.6f})")
+    print(
+        f"✅ Modelo {mode} guardado: {save_path} (val_loss={best_val_loss:.6f})")
 
     # Guardar norm_info para inferencia
     norm_path = f"models/norm_{mode}.pth"
