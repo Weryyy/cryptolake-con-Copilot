@@ -1,0 +1,28 @@
+# ============================================================
+# CryptoLake — Project Configuration
+# ============================================================
+# Install:      pip install -e .
+# Install dev:  pip install -e ".[dev]"
+# ============================================================
+
+[project]
+name = "cryptolake"
+version = "1.0.0"
+description = "Real-time crypto analytics lakehouse"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "ruff>=0.3.0",
+    "mypy>=1.8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
