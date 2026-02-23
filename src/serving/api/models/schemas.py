@@ -44,6 +44,23 @@ class PredictionResponse(BaseModel):
     current_price: float
     sentiment_bias: str
     memory_details: Optional[dict] = None
+    model_version: Optional[str] = None
+    confidence: Optional[float] = None
+    direction_probability: Optional[float] = None
+    prediction_curve: Optional[list] = None
+
+
+class DualPredictionResponse(BaseModel):
+    """Respuesta con predicciones de ambos modelos para comparacion."""
+    legacy: Optional[PredictionResponse] = None
+    ensemble: Optional[PredictionResponse] = None
+    primary_model: str = "legacy"
+
+
+class ModelAccuracyComparison(BaseModel):
+    """Precision de ambos modelos para comparacion lado a lado."""
+    legacy: Optional[dict] = None
+    ensemble: Optional[dict] = None
 
 
 class OHLCResponse(BaseModel):

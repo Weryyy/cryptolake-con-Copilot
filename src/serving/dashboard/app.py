@@ -67,6 +67,26 @@ def fetch_prediction():
         return None
 
 
+def fetch_dual_prediction():
+    """Fetch predictions from both models (Legacy + Ensemble)."""
+    try:
+        response = requests.get(
+            f"{API_URL}/api/v1/analytics/dual-prediction", timeout=15)
+        return response.json()
+    except Exception:
+        return None
+
+
+def fetch_model_comparison():
+    """Fetch accuracy comparison between both models."""
+    try:
+        response = requests.get(
+            f"{API_URL}/api/v1/analytics/model-comparison", timeout=15)
+        return response.json()
+    except Exception:
+        return None
+
+
 def fetch_prediction_accuracy():
     try:
         response = requests.get(
@@ -212,13 +232,18 @@ if page == "Market Overview":
             with p_col3:
                 st.info(f"Market Bias: **{pred['sentiment_bias']}**")
 
-            # ── Layout: Chart (izquierda) + Accuracy Panel (derecha) ──
+            # -- Layout: Chart (izquierda) + Accuracy Panel (derecha) --
             chart_col, accuracy_col = st.columns([3, 1])
 
             with chart_col:
                 # Candlestick Chart (Bitcoin by default for overview)
-                ohlc_data = fetch_realtime_ohlc("bitcoin")
-                if ohlc_data:
+                try:
+                    ohlc_data = fetch_realtime_ohlc("bitcoin")
+                except Exception as e:
+                    ohlc_data = []
+                    st.sidebar.error(f"OHLC fetch error: {e}")
+
+                if ohlc_data and len(ohlc_data) > 0:
                     df_ohlc = pd.DataFrame(ohlc_data)
                     df_ohlc['timestamp'] = pd.to_datetime(df_ohlc['timestamp'])
 
@@ -231,47 +256,80 @@ if page == "Market Overview":
                         name='BTC Real-time'
                     )])
 
-                    # Solo agregar línea si la predicción es válida (Predicted Wave)
-                    if pred['predicted_price'] > 0:
-                        last_time = df_ohlc['timestamp'].iloc[-1]
-                        last_price = df_ohlc['close'].iloc[-1]
-                        pred_time = last_time + pd.Timedelta(minutes=5)
+                    # Dual Model Prediction Curves
+                    dual = fetch_dual_prediction()
+                    last_time = df_ohlc['timestamp'].iloc[-1]
+                    last_price = df_ohlc['close'].iloc[-1]
 
+                    # Legacy TFT prediction (single point - cyan line)
+                    if (dual and dual.get('legacy')
+                            and dual['legacy'].get('predicted_price', 0) > 0):
+                        leg = dual['legacy']
+                        pred_time_leg = last_time + pd.Timedelta(minutes=5)
                         fig_ohlc.add_trace(go.Scatter(
-                            x=[last_time, pred_time],
-                            y=[last_price, pred['predicted_price']],
+                            x=[last_time, pred_time_leg],
+                            y=[last_price, leg['predicted_price']],
                             mode='lines+markers',
-                            name='AI WAVE Prediction',
+                            name='Legacy TFT',
                             line=dict(color='cyan', width=3, dash='dashdot'),
                             marker=dict(size=10, symbol='star')
                         ))
 
-                        st.sidebar.success(
-                            f"🎯 AI Prediction Wave: ${pred['predicted_price']:,.2f}")
+                    # Ensemble prediction (multi-point curve - magenta)
+                    if dual and dual.get('ensemble'):
+                        ens = dual['ensemble']
+                        curve = ens.get('prediction_curve', [])
+                        if curve and len(curve) > 0:
+                            curve_times = [last_time]
+                            curve_prices = [last_price]
+                            for pt in curve:
+                                t = last_time + pd.Timedelta(
+                                    seconds=pt['horizon_seconds'])
+                                curve_times.append(t)
+                                curve_prices.append(pt['predicted_price'])
+                            fig_ohlc.add_trace(go.Scatter(
+                                x=curve_times,
+                                y=curve_prices,
+                                mode='lines+markers',
+                                name='Ensemble Curve',
+                                line=dict(color='magenta', width=2, dash='dot'),
+                                marker=dict(size=6, symbol='diamond')
+                            ))
+                        elif ens.get('predicted_price', 0) > 0:
+                            pred_time_ens = last_time + pd.Timedelta(minutes=3)
+                            fig_ohlc.add_trace(go.Scatter(
+                                x=[last_time, pred_time_ens],
+                                y=[last_price, ens['predicted_price']],
+                                mode='lines+markers',
+                                name='Ensemble',
+                                line=dict(color='magenta', width=2, dash='dot'),
+                                marker=dict(size=8, symbol='diamond')
+                            ))
 
                     fig_ohlc.update_layout(
-                        title="Real-time BTC Candles & AI Prediction",
+                        title="Real-time BTC Candles & Dual AI Predictions",
                         xaxis_rangeslider_visible=False,
                         template="plotly_dark",
                         height=500
                     )
-                    st.plotly_chart(fig_ohlc, use_container_width=True)
+                    st.plotly_chart(fig_ohlc, width='stretch')
                 else:
-                    st.info("⌛ Esperando primer micro-batch de datos OHLC...")
+                    st.info("Esperando primer micro-batch de datos OHLC...")
 
             with accuracy_col:
-                # ── Panel de Precisión del Modelo ──
-                st.markdown("### 🎯 Model Accuracy")
+                # -- Panel de Precision Dual --
+                st.markdown("### Model Accuracy")
+                comparison = fetch_model_comparison()
                 acc = fetch_prediction_accuracy()
 
+                # Show primary model gauge (backward-compatible)
                 if acc and acc.get("total_evaluated", 0) > 0:
-                    # Gauge de precisión direccional
                     dir_acc = acc.get("direction_accuracy", 0)
                     fig_acc = go.Figure(go.Indicator(
                         mode="gauge+number",
                         value=dir_acc,
                         domain={'x': [0, 1], 'y': [0, 1]},
-                        title={'text': "Direction %"},
+                        title={'text': "Primary Direction %"},
                         number={'suffix': "%"},
                         gauge={
                             'axis': {'range': [0, 100]},
@@ -289,46 +347,49 @@ if page == "Market Overview":
                         height=200,
                         margin=dict(l=20, r=20, t=40, b=20)
                     )
-                    st.plotly_chart(fig_acc, use_container_width=True)
+                    st.plotly_chart(fig_acc, width='stretch')
 
-                    # Métricas numéricas
-                    st.metric("MAE (Mean Abs Error)",
-                              f"${acc.get('mae', 0):,.2f}")
-                    st.metric("MAPE",
-                              f"{acc.get('mape', 0):.2f}%")
+                # Dual model comparison table
+                if comparison:
+                    leg_acc = comparison.get("legacy")
+                    ens_acc = comparison.get("ensemble")
+
+                    if leg_acc or ens_acc:
+                        st.markdown("**Model Comparison**")
+                        comp_data = []
+                        if leg_acc and leg_acc.get("total_evaluated", 0) > 0:
+                            comp_data.append({
+                                "Model": "Legacy TFT",
+                                "Dir %": f"{leg_acc.get('direction_accuracy', 0):.1f}%",
+                                "MAE": f"${leg_acc.get('mae', 0):,.0f}",
+                                "Evals": leg_acc.get("total_evaluated", 0),
+                            })
+                        if ens_acc and ens_acc.get("total_evaluated", 0) > 0:
+                            comp_data.append({
+                                "Model": "Ensemble",
+                                "Dir %": f"{ens_acc.get('direction_accuracy', 0):.1f}%",
+                                "MAE": f"${ens_acc.get('mae', 0):,.0f}",
+                                "Evals": ens_acc.get("total_evaluated", 0),
+                            })
+                        if comp_data:
+                            st.dataframe(pd.DataFrame(comp_data),
+                                         hide_index=True,
+                                         width='stretch')
+                elif acc and acc.get("total_evaluated", 0) > 0:
+                    st.metric("MAE", f"${acc.get('mae', 0):,.2f}")
                     st.metric("Evaluaciones",
                               f"{acc.get('total_evaluated', 0)}")
-                    st.metric("Dirección Correcta",
-                              f"{acc.get('correct_direction', 0)}/{acc.get('total_direction', 0)}")
 
-                    # Mini gráfico de errores recientes
-                    recent = acc.get("recent_errors", [])
-                    if recent:
-                        df_err = pd.DataFrame(recent)
-                        df_err['timestamp'] = pd.to_datetime(
-                            df_err['timestamp'], unit='s')
-                        fig_err = px.line(
-                            df_err, x='timestamp', y='pct_error',
-                            title='Recent Error %',
-                            labels={'pct_error': '%', 'timestamp': ''}
-                        )
-                        fig_err.update_layout(
-                            template="plotly_dark",
-                            height=180,
-                            margin=dict(l=20, r=20, t=40, b=20),
-                            showlegend=False
-                        )
-                        st.plotly_chart(fig_err, use_container_width=True)
-                else:
-                    st.info("⏳ Recopilando datos de precisión...")
+                if not acc or acc.get("total_evaluated", 0) == 0:
+                    st.info("Recopilando datos de precision...")
                     st.caption(
-                        "Las métricas aparecerán tras ~2 min de predicciones")
+                        "Las metricas apareceran tras ~2 min de predicciones")
 
         st.subheader("🌍 All Assets Market Overview")
         df = pd.DataFrame(overview_data)
         if not df.empty:
             # Asegurar que no haya nulos antes de formatear
-            df = df.fillna(0)
+            df = df.fillna(0).infer_objects(copy=False)
             # Renombrar columnas para mejor visualización
             df_display = df.rename(columns={
                 "coin_id": "Asset",
@@ -374,21 +435,56 @@ elif page == "Price Charts":
                     name='Real-time'
                 )])
 
-                # Add AI Prediction Wave if available for this coin
-                pred = fetch_prediction()
-                if pred and pred['predicted_price'] > 0 and pred.get('coin_id') == selected_coin:
+                # Dual Model Prediction Curves
+                if selected_coin == 'bitcoin':
+                    dual = fetch_dual_prediction()
                     last_time = df_ohlc['timestamp'].iloc[-1]
                     last_price = df_ohlc['close'].iloc[-1]
-                    pred_time = last_time + pd.Timedelta(seconds=30)
 
-                    fig_candlestick.add_trace(go.Scatter(
-                        x=[last_time, pred_time],
-                        y=[last_price, pred['predicted_price']],
-                        mode='lines+markers',
-                        name='AI WAVE Prediction',
-                        line=dict(color='cyan', width=3, dash='dashdot'),
-                        marker=dict(size=10, symbol='star')
-                    ))
+                    if (dual and dual.get('legacy')
+                            and dual['legacy'].get('predicted_price', 0) > 0):
+                        leg = dual['legacy']
+                        pred_time_leg = last_time + pd.Timedelta(minutes=5)
+                        fig_candlestick.add_trace(go.Scatter(
+                            x=[last_time, pred_time_leg],
+                            y=[last_price, leg['predicted_price']],
+                            mode='lines+markers',
+                            name='Legacy TFT',
+                            line=dict(color='cyan', width=3, dash='dashdot'),
+                            marker=dict(size=10, symbol='star')
+                        ))
+
+                    if dual and dual.get('ensemble'):
+                        ens = dual['ensemble']
+                        curve = ens.get('prediction_curve', [])
+                        if curve:
+                            ct = [last_time]
+                            cp = [last_price]
+                            for pt in curve:
+                                ct.append(last_time + pd.Timedelta(
+                                    seconds=pt['horizon_seconds']))
+                                cp.append(pt['predicted_price'])
+                            fig_candlestick.add_trace(go.Scatter(
+                                x=ct, y=cp,
+                                mode='lines+markers',
+                                name='Ensemble Curve',
+                                line=dict(color='magenta', width=2, dash='dot'),
+                                marker=dict(size=6, symbol='diamond')
+                            ))
+                else:
+                    pred = fetch_prediction()
+                    if pred and pred['predicted_price'] > 0 and pred.get('coin_id') == selected_coin:
+                        last_time = df_ohlc['timestamp'].iloc[-1]
+                        last_price = df_ohlc['close'].iloc[-1]
+                        pred_time = last_time + pd.Timedelta(seconds=30)
+                        fig_candlestick.add_trace(go.Scatter(
+                            x=[last_time, pred_time],
+                            y=[last_price, pred['predicted_price']],
+                            mode='lines+markers',
+                            name='AI Prediction',
+                            line=dict(color='cyan', width=3, dash='dashdot'),
+                            marker=dict(size=10, symbol='star')
+                        ))
 
                 fig_candlestick.update_layout(
                     template="plotly_dark",
@@ -465,7 +561,7 @@ elif page == "Coin Comparison":
                         yaxis_title="Normalized Price (Base 100)",
                         height=450,
                     )
-                    st.plotly_chart(fig_comp, use_container_width=True)
+                    st.plotly_chart(fig_comp, width='stretch')
 
                 # Side-by-side metrics
                 st.subheader("📋 Comparative Metrics")
@@ -515,7 +611,7 @@ elif page == "Coin Comparison":
                             yaxis_title="Volume (USD)",
                             height=350,
                         )
-                        st.plotly_chart(fig_vol, use_container_width=True)
+                        st.plotly_chart(fig_vol, width='stretch')
             else:
                 st.info("Esperando datos históricos para ambas monedas...")
 
@@ -533,19 +629,31 @@ elif page == "Trading Signals":
 
     with sig_col1:
         st.markdown("### 🤖 AI Prediction")
-        if pred and pred.get("timestamp", 0) > 0:
+        dual = fetch_dual_prediction()
+        if dual:
+            for label, key, color_tag in [
+                ("Legacy TFT", "legacy", "cyan"),
+                ("Ensemble", "ensemble", "magenta"),
+            ]:
+                m = dual.get(key)
+                if m and m.get('predicted_price', 0) > 0:
+                    dp = ((m['predicted_price'] - m['current_price'])
+                          / m['current_price']) * 100 if m.get('current_price', 0) > 0 else 0
+                    icon = "🟢" if dp > 0 else "🔴"
+                    st.metric(f"{label}", f"${m['predicted_price']:,.2f}",
+                              delta=f"{dp:+.2f}%")
+                    st.caption(f"{icon} {m.get('sentiment_bias', 'N/A')}")
+            if dual.get('primary_model'):
+                st.caption(f"Primary: **{dual['primary_model']}**")
+        elif pred and pred.get("timestamp", 0) > 0:
             diff_pct = ((pred['predicted_price'] - pred['current_price']) /
                         pred['current_price']) * 100 if pred['current_price'] > 0 else 0
             color = "🟢" if diff_pct > 0 else "🔴"
             st.metric("AI Target", f"${pred['predicted_price']:,.2f}",
                       delta=f"{diff_pct:+.2f}%")
             st.write(f"{color} Bias: **{pred['sentiment_bias']}**")
-            if pred.get('memory_details'):
-                hist = pred['memory_details'].get('historical', 0)
-                recent = pred['memory_details'].get('recent', 0)
-                st.caption(f"Historical: {hist:.4f} | Recent: {recent:.4f}")
         else:
-            st.info("Esperando primera predicción...")
+            st.info("Esperando primera prediccion...")
 
     with sig_col2:
         st.markdown("### 😱 Market Sentiment")
@@ -570,7 +678,17 @@ elif page == "Trading Signals":
 
     with sig_col3:
         st.markdown("### 🎯 Model Reliability")
-        if acc and acc.get("total_evaluated", 0) > 0:
+        comp = fetch_model_comparison()
+        if comp and (comp.get('legacy') or comp.get('ensemble')):
+            for lbl, mk in [("Legacy", "legacy"), ("Ensemble", "ensemble")]:
+                ma = comp.get(mk)
+                if ma and ma.get('total_evaluated', 0) > 0:
+                    da = ma.get('direction_accuracy', 0)
+                    mp = ma.get('mape', 0)
+                    rel = "🟢" if da >= 60 else ("🟡" if da >= 50 else "🔴")
+                    st.metric(f"{lbl} Dir %", f"{da:.1f}%")
+                    st.caption(f"MAE ${ma.get('mae', 0):,.0f} | {rel}")
+        elif acc and acc.get("total_evaluated", 0) > 0:
             dir_acc = acc.get("direction_accuracy", 0)
             mape = acc.get("mape", 0)
             if dir_acc >= 60 and mape < 2:
@@ -583,7 +701,7 @@ elif page == "Trading Signals":
             st.metric("MAPE", f"{mape:.2f}%")
             st.write(f"Reliability: **{reliability}**")
         else:
-            st.info("Recopilando métricas...")
+            st.info("Recopilando metricas...")
 
     # Combined signal matrix
     st.markdown("---")
@@ -628,7 +746,7 @@ elif page == "Trading Signals":
             })
 
         st.dataframe(pd.DataFrame(signal_data),
-                     hide_index=True, use_container_width=True)
+                     hide_index=True, width='stretch')
 
 elif page == "Logs & System Status":
     st.header("🛠️ System Status & Data Quality")
@@ -709,7 +827,7 @@ elif page == "Fear & Greed Index":
             }
         ))
         fig_gauge.update_layout(template="plotly_dark", height=400)
-        st.plotly_chart(fig_gauge, use_container_width=True)
+        st.plotly_chart(fig_gauge, width='stretch')
 
     # ── Historical Fear & Greed Bar Chart ──
     st.markdown("---")
@@ -762,7 +880,7 @@ elif page == "Fear & Greed Index":
             height=450,
             showlegend=False,
         )
-        st.plotly_chart(fig_fg_hist, use_container_width=True)
+        st.plotly_chart(fig_fg_hist, width='stretch')
     else:
         st.warning(
             "No hay datos históricos de Fear & Greed disponibles aún. Ejecuta la ingesta primero.")

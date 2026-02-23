@@ -173,53 +173,76 @@ class TemporalFusionTransformer(nn.Module):
 # ──────────────────────────────────────────────────────────────
 
 class ReturnLSTM(nn.Module):
-    """LSTM para predecir retornos (cambio porcentual).
+    """LSTM con Attention para predecir retornos (cambio porcentual).
 
-    Cambios vs TFT original:
-    - Input: 20 features (vs 4) → mucho más contexto
-    - Target: retorno % (vs precio absoluto) → más estable
-    - 2 capas LSTM con dropout → mejor generalización
-    - Cabeza de clasificación + regresión separadas
+    Mejoras v3:
+    - hidden_dim=128 (vs 64) -> mas capacidad para patrones complejos
+    - Self-attention sobre estados LSTM -> foco en timesteps relevantes
+    - 2 capas LSTM con dropout -> mejor generalizacion
+    - Cabeza de clasificacion + regresion separadas
+    - LayerNorm para estabilidad del training
 
-    Input: secuencia de 20 features × seq_len timesteps
-    Output: retorno predicho (escalar) + probabilidad de dirección
+    Input: secuencia de 20 features x seq_len timesteps
+    Output: retorno predicho (escalar) + probabilidad de direccion
     """
 
-    def __init__(self, input_dim=20, hidden_dim=64, num_layers=2, dropout=0.2):
+    def __init__(self, input_dim=20, hidden_dim=128, num_layers=2, dropout=0.2):
         super().__init__()
+        self.hidden_dim = hidden_dim
         self.lstm = nn.LSTM(
             input_dim, hidden_dim, num_layers=num_layers,
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0,
         )
-        # Cabeza de regresión (predice retorno %)
+        # Self-attention: aprende que timesteps importan mas
+        self.attention = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.Tanh(),
+            nn.Linear(hidden_dim // 2, 1),
+        )
+        self.layer_norm = nn.LayerNorm(hidden_dim)
+        # Cabeza de regresion (predice retorno %)
         self.return_head = nn.Sequential(
-            nn.Linear(hidden_dim, 32),
+            nn.Linear(hidden_dim, 64),
             nn.ReLU(),
             nn.Dropout(dropout),
+            nn.Linear(64, 32),
+            nn.ReLU(),
             nn.Linear(32, 1),
         )
-        # Cabeza de clasificación (predice dirección)
+        # Cabeza de clasificacion (predice direccion)
         self.direction_head = nn.Sequential(
-            nn.Linear(hidden_dim, 32),
+            nn.Linear(hidden_dim, 64),
             nn.ReLU(),
             nn.Dropout(dropout),
+            nn.Linear(64, 32),
+            nn.ReLU(),
             nn.Linear(32, 1),
             nn.Sigmoid(),
         )
 
     def forward(self, x):
         """
-        x: [batch, seq_len, 20] → (return_pred, direction_prob)
+        x: [batch, seq_len, 20] -> (return_pred, direction_prob)
 
         Returns:
             return_pred: [batch, 1] retorno predicho
             direction_prob: [batch, 1] probabilidad de subida
         """
-        _, (h, _) = self.lstm(x)
-        h_last = h[-1]  # Último estado oculto de la última capa
-        return_pred = self.return_head(h_last)
-        direction_prob = self.direction_head(h_last)
+        lstm_out, (h, _) = self.lstm(x)  # lstm_out: [batch, seq_len, hidden]
+
+        # Self-attention sobre todos los timesteps
+        attn_scores = self.attention(lstm_out)  # [batch, seq_len, 1]
+        attn_weights = torch.softmax(attn_scores, dim=1)  # [batch, seq_len, 1]
+        context = (lstm_out * attn_weights).sum(dim=1)  # [batch, hidden]
+
+        # Combinar context con ultimo estado oculto
+        h_last = h[-1]  # [batch, hidden]
+        combined = context + h_last  # residual connection
+        combined = self.layer_norm(combined)
+
+        return_pred = self.return_head(combined)
+        direction_prob = self.direction_head(combined)
         return return_pred, direction_prob
 
 

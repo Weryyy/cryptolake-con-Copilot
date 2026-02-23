@@ -1,12 +1,89 @@
 """Analytics endpoints."""
 import json
+import subprocess
+import threading
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter
-from src.serving.api.models.schemas import FearGreedResponse, FearGreedHistoryItem, MarketOverview, PredictionResponse, OHLCResponse, SystemAlert, DQReport, PredictionAccuracy
+from fastapi import APIRouter, BackgroundTasks
+from src.serving.api.models.schemas import FearGreedResponse, FearGreedHistoryItem, MarketOverview, PredictionResponse, OHLCResponse, SystemAlert, DQReport, PredictionAccuracy, DualPredictionResponse, ModelAccuracyComparison
 from src.serving.api.utils import get_redis_client, load_fresh_table, make_iso_filter
 import pyarrow.compute as pc
 
 router = APIRouter(tags=["Analytics"])
+
+
+# ------------------------------------------------------------------ #
+#  ML Retrain endpoint (triggered by Airflow or manual curl)
+# ------------------------------------------------------------------ #
+_retrain_lock = threading.Lock()
+
+
+def _run_training(mode: str):
+    """Execute training in a subprocess and publish status to Redis."""
+    redis = get_redis_client()
+    redis.set("ml_retrain_status", json.dumps({
+        "status": "running", "mode": mode,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }))
+    try:
+        result = subprocess.run(
+            ["python", "-m", "src.ml.train", f"--mode={mode}"],
+            capture_output=True, text=True, timeout=1800,  # 30 min max
+        )
+        success = result.returncode == 0
+        redis.set("ml_retrain_status", json.dumps({
+            "status": "success" if success else "failed",
+            "mode": mode,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "returncode": result.returncode,
+            "stdout_tail": (result.stdout or "")[-500:],
+            "stderr_tail": (result.stderr or "")[-500:],
+        }))
+    except subprocess.TimeoutExpired:
+        redis.set("ml_retrain_status", json.dumps({
+            "status": "timeout", "mode": mode,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        }))
+    except Exception as e:
+        redis.set("ml_retrain_status", json.dumps({
+            "status": "error", "mode": mode,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "error": str(e),
+        }))
+    finally:
+        _retrain_lock.release()
+
+
+@router.post("/ml/retrain")
+async def trigger_retrain(mode: str = "ensemble"):
+    """Trigger ML model retraining (ensemble or legacy).
+
+    Called by Airflow DAG or manual curl.  Runs training
+    in a background thread and reports status via Redis key
+    ``ml_retrain_status``.
+
+    Args:
+        mode: 'ensemble' (default) or 'legacy'
+    """
+    if mode not in ("ensemble", "legacy"):
+        return {"status": "error", "detail": "mode must be 'ensemble' or 'legacy'"}
+
+    if not _retrain_lock.acquire(blocking=False):
+        return {"status": "already_running",
+                "detail": "A training job is already in progress"}
+
+    thread = threading.Thread(target=_run_training, args=(mode,), daemon=True)
+    thread.start()
+    return {"status": "started", "mode": mode}
+
+
+@router.get("/ml/retrain-status")
+async def get_retrain_status():
+    """Get current status of the most recent retrain job."""
+    redis = get_redis_client()
+    data = redis.get("ml_retrain_status")
+    if not data:
+        return {"status": "no_history"}
+    return json.loads(data)
 
 
 @router.get("/analytics/system-alerts", response_model=list[SystemAlert])
@@ -66,6 +143,59 @@ async def get_prediction_accuracy():
         return PredictionAccuracy()
     return PredictionAccuracy(**json.loads(data))
 
+@router.get("/analytics/dual-prediction", response_model=DualPredictionResponse)
+async def get_dual_prediction():
+    """Predicciones de ambos modelos (Legacy TFT + Ensemble) en paralelo.
+
+    Retorna ambas predicciones para mostrar como curvas separadas
+    en el dashboard. El ensemble incluye prediction_curve con
+    multiples puntos futuros.
+    """
+    redis = get_redis_client()
+
+    legacy_data = redis.get("live_prediction_legacy")
+    ensemble_data = redis.get("live_prediction_ensemble")
+
+    legacy = None
+    ensemble = None
+
+    if legacy_data:
+        try:
+            legacy = PredictionResponse(**json.loads(legacy_data))
+        except Exception:
+            pass
+
+    if ensemble_data:
+        try:
+            ensemble = PredictionResponse(**json.loads(ensemble_data))
+        except Exception:
+            pass
+
+    # Determinar cual es primario
+    primary = "legacy" if legacy else ("ensemble" if ensemble else "none")
+
+    return DualPredictionResponse(
+        legacy=legacy,
+        ensemble=ensemble,
+        primary_model=primary,
+    )
+
+
+@router.get("/analytics/model-comparison", response_model=ModelAccuracyComparison)
+async def get_model_comparison():
+    """Comparacion de precision de ambos modelos lado a lado.
+
+    Retorna metricas de accuracy para Legacy y Ensemble por separado.
+    """
+    redis = get_redis_client()
+
+    legacy_acc = redis.get("prediction_accuracy_legacy")
+    ensemble_acc = redis.get("prediction_accuracy_ensemble")
+
+    return ModelAccuracyComparison(
+        legacy=json.loads(legacy_acc) if legacy_acc else None,
+        ensemble=json.loads(ensemble_acc) if ensemble_acc else None,
+    )
 
 @router.get("/analytics/market-overview", response_model=list[MarketOverview])
 async def get_market_overview():

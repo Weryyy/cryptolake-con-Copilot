@@ -1,19 +1,19 @@
-.PHONY: help up down down-clean logs logs-kafka logs-spark status spark-shell kafka-topics kafka-create-topics kafka-describe test lint format dbt-run dbt-test quality-check seed pipeline init-iceberg init-namespaces bronze-load silver-transform gold-transform train-ml train-ml-legacy
+.PHONY: help up down down-clean logs logs-kafka logs-spark status spark-shell kafka-topics kafka-create-topics kafka-describe test lint format dbt-run dbt-test quality-check seed pipeline init-iceberg init-namespaces bronze-load silver-transform gold-transform train-ml train-ml-legacy train-ml-all retrain-api restart-ml ml-status
 
 help: ## Mostrar esta ayuda
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 	awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 up: ## Arrancar todos los servicios
-	@echo "🚀 Arrancando CryptoLake..."
+	@echo "Starting CryptoLake..."
 	docker compose up -d --build
 	@echo ""
-	@echo "⏳ Esperando a que los servicios estén listos (esto tarda ~60s la primera vez)..."
+	@echo "Waiting for services to be ready (~60s first time)..."
 	@sleep 30
 	@echo ""
-	@echo "✅ CryptoLake está corriendo!"
+	@echo "[OK] CryptoLake is running!"
 	@echo ""
-	@echo "📊 Servicios disponibles:"
+	@echo "Available services:"
 	@echo "   MinIO Console:   http://localhost:9001  (user: cryptolake / pass: cryptolake123)"
 	@echo "   Kafka UI:        http://localhost:8080"
 	@echo "   Spark UI:        http://localhost:8082"
@@ -29,7 +29,7 @@ down: ## Parar todos los servicios (conserva datos)
 
 down-clean: ## Parar y BORRAR todos los datos
 	docker compose down -v
-	@echo "🗑️  Todos los volumes eliminados"
+	@echo "[OK] All volumes removed"
 
 rebuild: ## Rebuild y restart todos los servicios
 	docker compose down
@@ -69,7 +69,7 @@ kafka-create-topics: ## Crear los topics necesarios
 	    --create --topic prices.realtime \
 	    --partitions 3 --replication-factor 1 \
 	    --config retention.ms=86400000
-	@echo "✅ Topic 'prices.realtime' creado (retención: 24h, 3 particiones)"
+	@echo "[OK] Topic 'prices.realtime' created (retention: 24h, 3 partitions)"
 
 kafka-describe: ## Describir el topic de precios
 	docker exec cryptolake-kafka \
@@ -84,23 +84,23 @@ init-iceberg: ## Inicializar tablas y namespaces Iceberg
 	docker exec -w /opt/spark/work cryptolake-spark-master python3 -m src.processing.batch.init_iceberg
 
 bronze-load: ## Cargar datos desde APIs a Bronze
-	@echo "🟤 Loading data to Bronze..."
+	@echo "[BRONZE] Loading data to Bronze..."
 	docker exec -w /opt/spark/work cryptolake-spark-master python3 -m src.processing.batch.api_to_bronze
-	@echo "✅ Bronze load complete"
+	@echo "[OK] Bronze load complete"
 
 silver-transform: ## Transformar Bronze a Silver
-	@echo "⚪ Transforming Bronze to Silver..."
+	@echo "[SILVER] Transforming Bronze to Silver..."
 	docker exec -w /opt/spark/work cryptolake-spark-master python3 -m src.processing.batch.bronze_to_silver
-	@echo "✅ Silver transform complete"
+	@echo "[OK] Silver transform complete"
 
 gold-transform: ## Construir Star Schema en Gold (PySpark)
-	@echo "🟡 Building Gold Star Schema..."
+	@echo "[GOLD] Building Gold Star Schema..."
 	docker exec -w /opt/spark/work cryptolake-spark-master \
 	    /opt/spark/bin/spark-submit /opt/spark/work/src/processing/batch/silver_to_gold.py
-	@echo "✅ Gold transform complete"
+	@echo "[OK] Gold transform complete"
 
 pipeline: ## Run full pipeline: init → bronze → silver → gold → dbt → quality
-	@echo "🚀 Running full CryptoLake pipeline..."
+	@echo "Running full CryptoLake pipeline..."
 	@echo ""
 	@echo "Step 1/6: Init Iceberg namespaces"
 	$(MAKE) init-iceberg
@@ -121,7 +121,7 @@ pipeline: ## Run full pipeline: init → bronze → silver → gold → dbt → 
 	@echo "Step 6/6: Quality checks"
 	$(MAKE) quality-check || true
 	@echo ""
-	@echo "✅ Full pipeline complete!"
+	@echo "[OK] Full pipeline complete!"
 
 # ==========================================================
 # DBT
@@ -138,10 +138,10 @@ dbt-test: ## Run dbt tests
 # ==========================================================
 
 quality-check: ## Run data quality checks (Bronze + Silver + Gold)
-	@echo "🔍 Running quality checks..."
+	@echo "[DQ] Running quality checks..."
 	docker exec -w /opt/spark/work cryptolake-spark-master \
 	    /opt/spark/bin/spark-submit /opt/spark/work/src/quality/run_quality_checks.py --layer=all
-	@echo "✅ Quality checks complete"
+	@echo "[OK] Quality checks complete"
 
 quality-bronze: ## Run only Bronze quality checks
 	docker exec -w /opt/spark/work cryptolake-spark-master \
@@ -160,15 +160,40 @@ quality-gold: ## Run only Gold quality checks
 # ==========================================================
 
 train-ml: ## Train ML ensemble (GradientBoosting + RandomForest + LSTM)
-	@echo "🧠 Training ML ensemble v2..."
+	@echo "Training ML ensemble v2..."
 	docker exec -w /app cryptolake-ml python -m src.ml.train --mode=ensemble
-	@echo "✅ ML ensemble training complete"
+	@echo "ML ensemble training complete"
 
 train-ml-legacy: ## Train legacy TFT models (historical + recent)
-	@echo "🧠 Training legacy TFT models..."
+	@echo "Training legacy TFT models..."
 	docker exec -w /app cryptolake-ml python -m src.ml.train --mode=historical
 	docker exec -w /app cryptolake-ml python -m src.ml.train --mode=recent
-	@echo "✅ Legacy ML training complete"
+	@echo "Legacy ML training complete"
+
+train-ml-all: ## Train BOTH models (ensemble + legacy) and restart inference
+	@echo "Training ALL ML models..."
+	$(MAKE) train-ml
+	$(MAKE) train-ml-legacy
+	$(MAKE) restart-ml
+	@echo "All models trained and inference restarted"
+
+retrain-api: ## Trigger retrain via API (same as Airflow does)
+	@echo "Triggering ensemble retrain via API..."
+	curl -s -X POST "http://localhost:8000/api/v1/ml/retrain?mode=ensemble" | python -m json.tool
+	@echo ""
+	@echo "Check status: make ml-status"
+
+restart-ml: ## Restart ML inference service (reload models)
+	@echo "Restarting ML inference..."
+	docker compose restart ml-inference
+	@echo "ML inference restarted (models will be reloaded)"
+
+ml-status: ## Check ML retrain status and model comparison
+	@echo "=== Retrain Status ==="
+	@curl -s "http://localhost:8000/api/v1/ml/retrain-status" | python -m json.tool 2>/dev/null || echo "API not available"
+	@echo ""
+	@echo "=== Model Comparison ==="
+	@curl -s "http://localhost:8000/api/v1/analytics/model-comparison" | python -m json.tool 2>/dev/null || echo "API not available"
 
 # ==========================================================
 # DEVELOPMENT

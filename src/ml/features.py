@@ -166,9 +166,12 @@ def build_feature_matrix(prices, volumes, timestamps=None, fear_greed=50):
     features["return_10"] = compute_returns(prices, min(10, max(1, n - 1)))
 
     # 5-7: Volatilidad multi-ventana
-    features["volatility_5"] = compute_volatility(prices, min(5, max(2, n - 1)))
-    features["volatility_10"] = compute_volatility(prices, min(10, max(2, n - 1)))
-    features["volatility_20"] = compute_volatility(prices, min(20, max(2, n - 1)))
+    features["volatility_5"] = compute_volatility(
+        prices, min(5, max(2, n - 1)))
+    features["volatility_10"] = compute_volatility(
+        prices, min(10, max(2, n - 1)))
+    features["volatility_20"] = compute_volatility(
+        prices, min(20, max(2, n - 1)))
 
     # 8-9: RSI a dos periodos
     rsi_7 = compute_rsi(prices, min(7, max(3, n // 4)))

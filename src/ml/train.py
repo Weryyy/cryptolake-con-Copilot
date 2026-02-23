@@ -165,8 +165,8 @@ def train_ensemble():
     print("=" * 60)
 
     # -- 1. Cargar datos --
-    print("\n[DATA] Cargando datos realtime (30s candles)...")
-    df_rt = load_realtime_data("bitcoin")
+    print("\n[DATA] Cargando datos realtime (30s candles, maximo disponible)...")
+    df_rt = load_realtime_data("bitcoin")  # sin filtro de horas = todos los datos
 
     print("[DATA] Cargando datos diarios (macro context)...")
     df_daily = load_daily_data("bitcoin")
@@ -184,7 +184,8 @@ def train_ensemble():
             "volume_usd": "sum",
             "coin_id": "first",
         }).dropna().reset_index()
-        print(f"   \u2705 Realtime: {len(df_rt)} \u2192 {len(df_rt_resampled)} candles (1min)")
+        print(
+            f"   \u2705 Realtime: {len(df_rt)} \u2192 {len(df_rt_resampled)} candles (1min)")
         frames.append(df_rt_resampled)
 
     if df_daily is not None and len(df_daily) >= 10:
@@ -194,7 +195,8 @@ def train_ensemble():
     if not frames:
         total_rt = len(df_rt) if df_rt is not None else 0
         total_d = len(df_daily) if df_daily is not None else 0
-        print(f"   [ERROR] Datos insuficientes (realtime={total_rt}, daily={total_d})")
+        print(
+            f"   [ERROR] Datos insuficientes (realtime={total_rt}, daily={total_d})")
         print("   -> Necesitas al menos 20 candles de 30s o 10 diarios.")
         return
 
@@ -206,7 +208,8 @@ def train_ensemble():
         df = df.drop_duplicates(subset=["timestamp"], keep="last")
     else:
         df = frames[0]
-        data_source = "realtime_2min" if df_rt is not None and len(df_rt) >= 20 else "daily"
+        data_source = "realtime_2min" if df_rt is not None and len(
+            df_rt) >= 20 else "daily"
 
     # Fear & Greed value
     fg_val = get_fear_greed_value()
@@ -222,14 +225,15 @@ def train_ensemble():
     # -- 2. Feature engineering --
     print("\n[FEAT] Construyendo features (20 dimensiones)...")
     lookback = 30  # warmup para que features sean estables
-    seq_len = 10   # ventana LSTM
+    seq_len = 20   # ventana LSTM (20 pasos x 20 features)
 
     # Features para modelos tabulares (GB + RF)
     X_tab, y_dir, y_ret = build_training_samples(
         prices, volumes, timestamps, fg_val, lookback=lookback,
     )
     if X_tab is None or len(X_tab) < 20:
-        print(f"   [ERROR] Muy pocas muestras tabulares ({0 if X_tab is None else len(X_tab)})")
+        print(
+            f"   [ERROR] Muy pocas muestras tabulares ({0 if X_tab is None else len(X_tab)})")
         return
 
     # Features para LSTM
@@ -252,8 +256,10 @@ def train_ensemble():
     y_ret_train, y_ret_val = y_ret[:split], y_ret[split:]
 
     print(f"\n[SPLIT] Split: {len(X_train)} train / {len(X_val)} validation")
-    print(f"   Distribución train: {y_dir_train.mean():.1%} UP / {1-y_dir_train.mean():.1%} DOWN")
-    print(f"   Distribución val:   {y_dir_val.mean():.1%} UP / {1-y_dir_val.mean():.1%} DOWN")
+    print(
+        f"   Distribución train: {y_dir_train.mean():.1%} UP / {1-y_dir_train.mean():.1%} DOWN")
+    print(
+        f"   Distribución val:   {y_dir_val.mean():.1%} UP / {1-y_dir_val.mean():.1%} DOWN")
 
     os.makedirs("models", exist_ok=True)
     results = {}
@@ -266,12 +272,14 @@ def train_ensemble():
     # Regularización fuerte para evitar overfitting con pocos datos
     n_samples = len(X_train)
     gb = GradientBoostingClassifier(
-        n_estimators=min(100, max(30, n_samples // 5)),
-        max_depth=2,           # shallow trees → menos overfitting
-        learning_rate=0.1,     # mayor LR con menos árboles
-        subsample=0.7,         # más dropout de datos
-        min_samples_leaf=max(10, n_samples // 30),  # mínimo grande
-        max_features=0.5,      # solo usa mitad de features por split
+        n_estimators=min(200, max(50, n_samples // 3)),
+        max_depth=3,           # un poco mas profundo para captar patrones
+        learning_rate=0.05,    # menor LR + mas arboles = mejor generalizacion
+        subsample=0.8,         # bootstrap de datos
+        min_samples_leaf=max(5, n_samples // 50),
+        max_features=0.7,      # mas features por split
+        validation_fraction=0.15,  # early stopping interno
+        n_iter_no_change=15,
         random_state=42,
     )
     gb.fit(X_train, y_dir_train)
@@ -304,10 +312,11 @@ def train_ensemble():
     start = time.time()
 
     rf = RandomForestClassifier(
-        n_estimators=min(150, max(50, n_samples // 3)),
-        max_depth=3,            # shallow → menos overfitting
-        min_samples_leaf=max(10, n_samples // 30),
-        max_features=0.5,
+        n_estimators=min(300, max(100, n_samples // 2)),
+        max_depth=5,            # mas profundo para patrones no lineales
+        min_samples_leaf=max(5, n_samples // 50),
+        max_features="sqrt",    # sqrt(20) ~ 4-5 features por split
+        class_weight="balanced",  # compensar desbalance UP/DOWN
         random_state=42,
         n_jobs=n_threads,
     )
@@ -336,20 +345,29 @@ def train_ensemble():
         split_seq = int(len(X_seq) * 0.80)
         X_seq_train = torch.tensor(X_seq[:split_seq]).to(device)
         X_seq_val = torch.tensor(X_seq[split_seq:]).to(device)
-        y_dir_seq_train = torch.tensor(y_dir_seq[:split_seq]).unsqueeze(-1).to(device)
-        y_dir_seq_val = torch.tensor(y_dir_seq[split_seq:]).unsqueeze(-1).to(device)
-        y_ret_seq_train = torch.tensor(y_ret_seq[:split_seq]).unsqueeze(-1).to(device)
-        y_ret_seq_val = torch.tensor(y_ret_seq[split_seq:]).unsqueeze(-1).to(device)
+        y_dir_seq_train = torch.tensor(
+            y_dir_seq[:split_seq]).unsqueeze(-1).to(device)
+        y_dir_seq_val = torch.tensor(
+            y_dir_seq[split_seq:]).unsqueeze(-1).to(device)
+        y_ret_seq_train = torch.tensor(
+            y_ret_seq[:split_seq]).unsqueeze(-1).to(device)
+        y_ret_seq_val = torch.tensor(
+            y_ret_seq[split_seq:]).unsqueeze(-1).to(device)
 
         model = ReturnLSTM(
-            input_dim=N_FEATURES, hidden_dim=64, num_layers=2, dropout=0.2,
+            input_dim=N_FEATURES, hidden_dim=128, num_layers=2, dropout=0.2,
         ).to(device)
 
-        optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+        optimizer = optim.AdamW(
+            model.parameters(), lr=0.001, weight_decay=1e-4)
         mse_loss = nn.MSELoss()
         bce_loss = nn.BCELoss()
+        # Focal-style weighting: direccion vale 3x mas que retorno
+        # porque medimos direction_accuracy, no MAE
+        direction_loss_weight = 3.0
+        return_loss_weight = 0.5
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode="min", factor=0.5, patience=20,
+            optimizer, mode="min", factor=0.5, patience=15,
         )
 
         # Mini-batches
@@ -373,7 +391,8 @@ def train_ensemble():
             for xb, yb_ret, yb_dir in loader:
                 optimizer.zero_grad()
                 pred_ret, pred_dir = model(xb)
-                loss = mse_loss(pred_ret, yb_ret) + 0.5 * bce_loss(pred_dir, yb_dir)
+                loss = (return_loss_weight * mse_loss(pred_ret, yb_ret)
+                        + direction_loss_weight * bce_loss(pred_dir, yb_dir))
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
@@ -387,15 +406,16 @@ def train_ensemble():
             with torch.no_grad():
                 val_ret, val_dir = model(X_seq_val)
                 val_loss = (
-                    mse_loss(val_ret, y_ret_seq_val)
-                    + 0.5 * bce_loss(val_dir, y_dir_seq_val)
+                    return_loss_weight * mse_loss(val_ret, y_ret_seq_val)
+                    + direction_loss_weight * bce_loss(val_dir, y_dir_seq_val)
                 ).item()
 
             scheduler.step(val_loss)
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+                best_state = {k: v.clone()
+                              for k, v in model.state_dict().items()}
                 patience_counter = 0
             else:
                 patience_counter += 1
@@ -417,7 +437,8 @@ def train_ensemble():
         model.eval()
         with torch.no_grad():
             _, val_dir_pred = model(X_seq_val)
-            lstm_preds = (val_dir_pred.cpu().numpy().flatten() > 0.5).astype(float)
+            lstm_preds = (val_dir_pred.cpu().numpy().flatten()
+                          > 0.5).astype(float)
             lstm_val_acc = accuracy_score(
                 y_dir_seq[split_seq:], lstm_preds,
             )
@@ -437,8 +458,35 @@ def train_ensemble():
     print("[EVAL] EVALUACION DEL ENSEMBLE (Walk-Forward Validation)")
     print("=" * 60)
 
-    # Pesos del ensemble
-    w_gb, w_rf, w_lstm = 0.45, 0.35, 0.20
+    # --- ADAPTIVE WEIGHTS basados en accuracy real de validacion ---
+    # Modelos con accuracy <= 50% son peores que moneda al aire: peso = 0
+    accuracies = {
+        "gb": gb_val_acc,
+        "rf": rf_val_acc,
+        "lstm": lstm_val_acc if has_lstm_data else 0.0,
+    }
+    # Solo dar peso a modelos que superan 50% (mejor que random)
+    raw_weights = {}
+    for k, acc in accuracies.items():
+        if acc > 0.50:
+            # Peso exponencial: premia mucho mas al mejor modelo
+            raw_weights[k] = (acc - 0.50) ** 2
+        else:
+            raw_weights[k] = 0.0
+
+    total_w = sum(raw_weights.values())
+    if total_w > 0:
+        w_gb = raw_weights["gb"] / total_w
+        w_rf = raw_weights["rf"] / total_w
+        w_lstm = raw_weights["lstm"] / total_w
+    else:
+        # Fallback: peso uniforme si ninguno supera 50%
+        w_gb, w_rf, w_lstm = 0.33, 0.33, 0.34
+
+    print(f"\n   [WEIGHTS] Pesos adaptativos basados en val accuracy:")
+    print(f"     GB:   {gb_val_acc:.1%} acc -> peso {w_gb:.3f}")
+    print(f"     RF:   {rf_val_acc:.1%} acc -> peso {w_rf:.3f}")
+    print(f"     LSTM: {lstm_val_acc:.1%} acc -> peso {w_lstm:.3f}")
 
     # Ensemble direction probability
     ensemble_proba = w_gb * gb_val_proba + w_rf * rf_val_proba
@@ -448,7 +496,6 @@ def train_ensemble():
         # El LSTM tiene menos muestras por el seq_len offset
         offset = len(y_dir_val) - len(lstm_preds)
         if offset >= 0 and len(lstm_preds) > 0:
-            # Ajustar pesos: dar peso LSTM solo donde tenemos predicciones
             lstm_proba_aligned = np.full(len(y_dir_val), 0.5)
             lstm_proba_aligned[offset:] = (
                 val_dir_pred.cpu().numpy().flatten()[: len(y_dir_val) - offset]
@@ -460,15 +507,18 @@ def train_ensemble():
             )
         else:
             # LSTM no alineado, usar solo GB + RF
-            ensemble_proba = (
-                (w_gb / (w_gb + w_rf)) * gb_val_proba
-                + (w_rf / (w_gb + w_rf)) * rf_val_proba
-            )
-    else:
+            w_sum = w_gb + w_rf
+            if w_sum > 0:
+                ensemble_proba = (
+                    (w_gb / w_sum) * gb_val_proba
+                    + (w_rf / w_sum) * rf_val_proba
+                )
+    elif w_gb + w_rf > 0:
         # Sin LSTM, redistribuir peso
+        w_sum = w_gb + w_rf
         ensemble_proba = (
-            (w_gb / (w_gb + w_rf)) * gb_val_proba
-            + (w_rf / (w_gb + w_rf)) * rf_val_proba
+            (w_gb / w_sum) * gb_val_proba
+            + (w_rf / w_sum) * rf_val_proba
         )
 
     # Accuracy sin filtro de confianza
@@ -478,23 +528,24 @@ def train_ensemble():
 
     # Accuracy CON filtro de confianza (solo predicciones confiables)
     confidence = np.abs(ensemble_proba - 0.5) * 2  # [0, 1]
-    thresholds = [0.2, 0.3, 0.4, 0.5, 0.6]
+    thresholds = [0.05, 0.10, 0.15, 0.20, 0.30, 0.40]
     print("\n   Accuracy por umbral de confianza:")
-    best_threshold = 0.3  # default
+    best_threshold = 0.05  # default muy bajo para no descartar predicciones
     best_filtered_acc = ensemble_acc
 
     for thresh in thresholds:
         mask = confidence >= thresh
         n_confident = mask.sum()
         if n_confident > 0:
-            filtered_acc = accuracy_score(y_dir_val[mask], ensemble_preds[mask])
+            filtered_acc = accuracy_score(
+                y_dir_val[mask], ensemble_preds[mask])
             coverage = n_confident / len(y_dir_val)
             print(
                 f"     conf >= {thresh:.1f}: "
                 f"{filtered_acc:.1%} accuracy, "
                 f"{coverage:.0%} coverage ({n_confident}/{len(y_dir_val)})"
             )
-            if filtered_acc > best_filtered_acc and coverage > 0.15:
+            if filtered_acc > best_filtered_acc and coverage > 0.30:
                 best_filtered_acc = filtered_acc
                 best_threshold = thresh
 
@@ -535,7 +586,8 @@ def train_ensemble():
     print(f"   ReturnLSTM:       {lstm_val_acc:.1%} val accuracy")
     print(f"   ─────────────────────────────────")
     print(f"   ENSEMBLE:         {ensemble_acc:.1%} (sin filtro)")
-    print(f"   ENSEMBLE:         {best_filtered_acc:.1%} (con confianza >= {best_threshold})")
+    print(
+        f"   ENSEMBLE:         {best_filtered_acc:.1%} (con confianza >= {best_threshold})")
     print(f"   -----------------------------------------")
     if best_filtered_acc >= 0.65:
         print("   [EXCELLENT] Excelente: modelo viable para uso real")
@@ -562,7 +614,8 @@ def train(mode="ensemble"):
         train_ensemble()
     else:
         # Legacy: entrenar TFT original
-        print(f"[WARN] Modo legacy '{mode}' -- usa 'ensemble' para el nuevo pipeline")
+        print(
+            f"[WARN] Modo legacy '{mode}' -- usa 'ensemble' para el nuevo pipeline")
         _train_legacy(mode)
 
 
@@ -676,4 +729,3 @@ if __name__ == "__main__":
             mode = sys.argv[sys.argv.index(arg) + 1]
 
     train(mode=mode)
-
