@@ -168,10 +168,65 @@ class TemporalFusionTransformer(nn.Module):
         return self.regressor(combined)
 
 
+# ──────────────────────────────────────────────────────────────
+# ReturnLSTM — modelo mejorado para predicción de retornos
+# ──────────────────────────────────────────────────────────────
+
+class ReturnLSTM(nn.Module):
+    """LSTM para predecir retornos (cambio porcentual).
+
+    Cambios vs TFT original:
+    - Input: 20 features (vs 4) → mucho más contexto
+    - Target: retorno % (vs precio absoluto) → más estable
+    - 2 capas LSTM con dropout → mejor generalización
+    - Cabeza de clasificación + regresión separadas
+
+    Input: secuencia de 20 features × seq_len timesteps
+    Output: retorno predicho (escalar) + probabilidad de dirección
+    """
+
+    def __init__(self, input_dim=20, hidden_dim=64, num_layers=2, dropout=0.2):
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_dim, hidden_dim, num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
+        )
+        # Cabeza de regresión (predice retorno %)
+        self.return_head = nn.Sequential(
+            nn.Linear(hidden_dim, 32),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(32, 1),
+        )
+        # Cabeza de clasificación (predice dirección)
+        self.direction_head = nn.Sequential(
+            nn.Linear(hidden_dim, 32),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(32, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        """
+        x: [batch, seq_len, 20] → (return_pred, direction_prob)
+
+        Returns:
+            return_pred: [batch, 1] retorno predicho
+            direction_prob: [batch, 1] probabilidad de subida
+        """
+        _, (h, _) = self.lstm(x)
+        h_last = h[-1]  # Último estado oculto de la última capa
+        return_pred = self.return_head(h_last)
+        direction_prob = self.direction_head(h_last)
+        return return_pred, direction_prob
+
+
 def get_device():
     """Retorna CPU (Quadro K4200 Kepler no soporta PyTorch CUDA moderno)."""
     if torch.cuda.is_available():
-        print("🚀 GPU detectada. Usando CUDA.")
+        print("[INFO] GPU detectada. Usando CUDA.")
         return torch.device("cuda")
-    print("💻 Usando CPU (Xeon E5-1620 v3 @ 3.50GHz).")
+    print("[INFO] Usando CPU (Xeon E5-1620 v3 @ 3.50GHz).")
     return torch.device("cpu")

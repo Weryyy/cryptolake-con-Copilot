@@ -53,6 +53,8 @@ async def get_prices(
             selected_fields=fields,
             limit=limit,
         ).to_arrow().to_pylist()
+        # Sort by price_date to ensure correct chart rendering
+        df.sort(key=lambda x: str(x.get("price_date", "")))
         return [PriceResponse(**row) for row in df]
     except Exception as e:
         print(f"Error querying Gold: {type(e).__name__}: {e}")
@@ -67,6 +69,7 @@ async def get_prices(
                 selected_fields=fields,
                 limit=limit,
             ).to_arrow().to_pylist()
+            df.sort(key=lambda x: str(x.get("price_date", "")))
             return [PriceResponse(**row) for row in df]
         except Exception as e2:
             print(f"Error querying Silver fallback: {type(e2).__name__}: {e2}")

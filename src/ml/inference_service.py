@@ -1,10 +1,13 @@
 """
-Servicio de Inferencia en Tiempo Real.
+Servicio de Inferencia v3 — Ensemble Multi-Modelo con Confianza.
 
 Genera predicciones cada 30 segundos usando:
-- Modelo TFT con 4 features: [precio, volumen, RSI, SMA_ratio]
-- Señales de agentes REALES: [técnica (RSI+SMA), sentimiento (F&G)]
-- Ensemble dual: 80% reciente + 20% histórico
+- GradientBoosting: 45% peso → dirección (probabilidad)
+- RandomForest: 35% peso → dirección (confirmación)
+- ReturnLSTM: 20% peso → dirección + magnitud de retorno
+- Filtro de confianza: solo publica cuando la confianza > umbral
+
+Métricas de precisión almacenadas en Redis con deduplicación.
 
 Optimizado para CPU (Xeon E5-1620 v3).
 """
@@ -12,37 +15,117 @@ import os
 import time
 import torch
 import json
+import joblib
 import numpy as np
-from src.ml.models import (
-    TemporalFusionTransformer,
-    CouncilOfAgents,
-    compute_rsi,
-    compute_sma,
-    get_device,
+from src.ml.models import ReturnLSTM, get_device
+from src.ml.features import (
+    N_FEATURES,
+    build_feature_matrix,
 )
 from src.serving.api.utils import get_iceberg_catalog, get_redis_client
 
 
-def load_model(path, device):
-    """Carga un modelo TFT con la nueva arquitectura (input_dim=4)."""
-    model = TemporalFusionTransformer(input_dim=4, agent_dim=2).to(device)
-    if os.path.exists(path):
-        model.load_state_dict(torch.load(path, map_location=device))
-        print(f"✅ Modelo cargado: {path}")
+# ──────────────────────────────────────────────────────────────
+# Carga de modelos
+# ──────────────────────────────────────────────────────────────
+
+def load_ensemble_models(device):
+    """Carga los 3 modelos del ensemble + configuración.
+
+    Returns:
+        dict con modelos y config, o None si falla.
+    """
+    config_path = "models/ensemble_config.json"
+    if not os.path.exists(config_path):
+        print("[WARN] models/ensemble_config.json no encontrado")
+        print("   -> Ejecuta primero: make train-ml")
+        return None
+
+    with open(config_path) as f:
+        config = json.load(f)
+
+    models = {"config": config}
+
+    # GradientBoosting
+    gb_path = "models/gb_direction.pkl"
+    if os.path.exists(gb_path):
+        models["gb"] = joblib.load(gb_path)
+        print(f"[OK] GradientBoosting cargado: {gb_path}")
     else:
-        print(f"⚠️ Modelo no encontrado: {path} (usando pesos aleatorios)")
-    model.eval()
-    return model
+        print(f"[WARN] {gb_path} no encontrado")
+        models["gb"] = None
+
+    # RandomForest
+    rf_path = "models/rf_direction.pkl"
+    if os.path.exists(rf_path):
+        models["rf"] = joblib.load(rf_path)
+        print(f"[OK] RandomForest cargado: {rf_path}")
+    else:
+        print(f"[WARN] {rf_path} no encontrado")
+        models["rf"] = None
+
+    # ReturnLSTM
+    lstm_path = "models/return_lstm.pth"
+    if os.path.exists(lstm_path):
+        lstm = ReturnLSTM(
+            input_dim=N_FEATURES, hidden_dim=64, num_layers=2, dropout=0.2,
+        ).to(device)
+        lstm.load_state_dict(torch.load(lstm_path, map_location=device))
+        lstm.eval()
+        models["lstm"] = lstm
+        print(f"[OK] ReturnLSTM cargado: {lstm_path}")
+    else:
+        print(f"[WARN] {lstm_path} no encontrado")
+        models["lstm"] = None
+
+    # Verificar que al menos GB o RF estén disponibles
+    if models["gb"] is None and models["rf"] is None:
+        print("[ERROR] Sin modelos tabulares, no se puede hacer ensemble")
+        return None
+
+    return models
 
 
-def get_btc_data(catalog):
-    """Obtiene últimos datos BTC de Iceberg con filtro optimizado."""
+# ──────────────────────────────────────────────────────────────
+# Fallback: cargar modelos legacy TFT si ensemble no existe
+# ──────────────────────────────────────────────────────────────
+
+def load_legacy_models(device):
+    """Carga modelos TFT legacy como fallback."""
+    from src.ml.models import TemporalFusionTransformer
+
+    models = {"type": "legacy"}
+    for mode in ["historical", "recent"]:
+        path = f"models/tft_{mode}.pth"
+        if os.path.exists(path):
+            model = TemporalFusionTransformer(input_dim=4, agent_dim=2).to(device)
+            model.load_state_dict(torch.load(path, map_location=device))
+            model.eval()
+            models[mode] = model
+            print(f"[OK] TFT legacy cargado: {path}")
+        else:
+            models[mode] = None
+    return models
+
+
+# ──────────────────────────────────────────────────────────────
+# Obtención de datos
+# ──────────────────────────────────────────────────────────────
+
+def get_btc_data(catalog, n_points=60):
+    """Obtiene últimos N puntos de BTC desde Iceberg.
+
+    Pide 2 horas de datos para tener suficiente historial
+    para las 20 features.
+    """
     table = catalog.load_table("silver.realtime_vwap")
     table.refresh()
 
     from datetime import datetime, timezone, timedelta
     since = datetime.now(timezone.utc) - timedelta(hours=2)
-    row_filter = f"coin_id == 'bitcoin' AND window_start >= '{since.isoformat()}'"
+    row_filter = (
+        f"coin_id == 'bitcoin' AND window_start >= '{since.isoformat()}'"
+    )
 
     df = table.scan(
         row_filter=row_filter,
@@ -61,154 +144,463 @@ def get_fear_greed(catalog):
         ).to_arrow().to_pylist()
         if rows:
             latest = sorted(
-                rows, key=lambda x: x["timestamp"], reverse=True)[0]
+                rows, key=lambda x: x["timestamp"], reverse=True
+            )[0]
             return int(latest["value"])
     except Exception:
         pass
     return 50
 
 
-def build_inference_features(prices, volumes, window_size=10):
-    """Construye el tensor de 4 features para inferencia.
+# ──────────────────────────────────────────────────────────────
+# Inferencia ensemble
+# ──────────────────────────────────────────────────────────────
 
-    Mismo pipeline que en training para consistencia.
+def ensemble_predict(models, features_matrix, device):
+    """Genera predicción del ensemble.
+
+    Args:
+        models: dict con gb, rf, lstm, config.
+        features_matrix: [N, 20] features de los últimos N timesteps.
+        device: torch device.
+
+    Returns:
+        dict con direction_prob, confidence, predicted_return, model_details.
     """
-    prices = np.asarray(prices, dtype=np.float64)
-    volumes = np.asarray(volumes, dtype=np.float64)
+    config = models["config"]
+    weights = config.get("weights", {"gb": 0.45, "rf": 0.35, "lstm": 0.20})
 
-    # Indicadores
-    rsi_period = min(14, max(3, len(prices) // 3))
-    rsi = compute_rsi(prices, period=rsi_period)
-    sma_short = compute_sma(prices, min(5, len(prices)))
-    sma_long = compute_sma(prices, min(10, len(prices)))
+    # Última fila de features para modelos tabulares
+    latest_features = features_matrix[-1:, :]  # [1, 20]
 
+    gb_prob = None
+    rf_prob = None
+    lstm_prob = None
+    lstm_return = None
+
+    active_weight = 0.0
+
+    # GradientBoosting
+    if models.get("gb") is not None:
+        try:
+            gb_prob = models["gb"].predict_proba(latest_features)[0, 1]
+            active_weight += weights["gb"]
+        except Exception as e:
+            print(f"[WARN] GB error: {e}")
+
+    # RandomForest
+    if models.get("rf") is not None:
+        try:
+            rf_prob = models["rf"].predict_proba(latest_features)[0, 1]
+            active_weight += weights["rf"]
+        except Exception as e:
+            print(f"[WARN] RF error: {e}")
+
+    # ReturnLSTM
+    if models.get("lstm") is not None:
+        try:
+            seq_len = config.get("seq_len", 10)
+            if len(features_matrix) >= seq_len:
+                x_seq = torch.tensor(
+                    features_matrix[-seq_len:], dtype=torch.float32
+                ).unsqueeze(0).to(device)  # [1, seq_len, 20]
+
+                with torch.no_grad():
+                    ret_pred, dir_pred = models["lstm"](x_seq)
+                    lstm_prob = dir_pred.item()
+                    lstm_return = ret_pred.item()
+                    active_weight += weights["lstm"]
+        except Exception as e:
+            print(f"[WARN] LSTM error: {e}")
+
+    if active_weight == 0:
+        return None
+
+    # Ensemble weighted average
+    direction_prob = 0.0
+    if gb_prob is not None:
+        direction_prob += (weights["gb"] / active_weight) * gb_prob
+    if rf_prob is not None:
+        direction_prob += (weights["rf"] / active_weight) * rf_prob
+    if lstm_prob is not None:
+        direction_prob += (weights["lstm"] / active_weight) * lstm_prob
+
+    # Confianza: distancia de 0.5 escalada a [0, 1]
+    confidence = abs(direction_prob - 0.5) * 2.0
+
+    # Retorno predicho
+    if lstm_return is not None:
+        predicted_return = lstm_return
+    else:
+        # Estimar retorno basado en dirección y volatilidad reciente
+        returns = np.diff(features_matrix[:, 0])  # return_1 está en col 0
+        avg_abs_return = np.abs(returns[-10:]).mean() if len(returns) >= 10 else 0.001
+        direction = 1.0 if direction_prob > 0.5 else -1.0
+        predicted_return = direction * avg_abs_return
+
+    return {
+        "direction_prob": float(direction_prob),
+        "confidence": float(confidence),
+        "predicted_return": float(predicted_return),
+        "model_details": {
+            "gb_prob": float(gb_prob) if gb_prob is not None else None,
+            "rf_prob": float(rf_prob) if rf_prob is not None else None,
+            "lstm_prob": float(lstm_prob) if lstm_prob is not None else None,
+            "lstm_return": float(lstm_return) if lstm_return is not None else None,
+        },
+    }
+
+
+# ──────────────────────────────────────────────────────────────
+# Inferencia legacy (fallback)
+# ──────────────────────────────────────────────────────────────
+
+def legacy_predict(models, prices, volumes, fg_val, device):
+    """Predicción usando modelos TFT legacy (fallback)."""
+    from src.ml.models import CouncilOfAgents, compute_rsi, compute_sma
+
+    prices_arr = np.asarray(prices, dtype=np.float64)
+    volumes_arr = np.asarray(volumes, dtype=np.float64)
+
+    rsi_period = min(14, max(3, len(prices_arr) // 3))
+    rsi = compute_rsi(prices_arr, period=rsi_period)
+    sma_short = compute_sma(prices_arr, min(5, len(prices_arr)))
+    sma_long = compute_sma(prices_arr, min(10, len(prices_arr)))
     sma_ratio = np.where(
-        sma_long > 0,
-        (sma_short / (sma_long + 1e-10)) - 1.0,
-        0.0,
+        sma_long > 0, (sma_short / (sma_long + 1e-10)) - 1.0, 0.0,
     )
 
-    # Normalización
-    p_min, p_max = prices.min(), prices.max()
+    p_min, p_max = prices_arr.min(), prices_arr.max()
     p_denom = p_max - p_min if p_max > p_min else 1.0
-    prices_norm = (prices - p_min) / p_denom
-
-    v_min, v_max = volumes.min(), volumes.max()
+    prices_norm = (prices_arr - p_min) / p_denom
+    v_min, v_max = volumes_arr.min(), volumes_arr.max()
     v_denom = v_max - v_min if v_max > v_min else 1.0
-    volumes_norm = (volumes - v_min) / v_denom
-
+    volumes_norm = (volumes_arr - v_min) / v_denom
     rsi_norm = np.nan_to_num(rsi, nan=50.0) / 100.0
     sma_ratio_clipped = np.clip(sma_ratio * 10, -1.0, 1.0)
 
-    # Tomar última ventana
+    window_size = 10
     feats = np.stack([
         prices_norm[-window_size:],
         volumes_norm[-window_size:],
         rsi_norm[-window_size:],
         sma_ratio_clipped[-window_size:],
-    ], axis=1)  # [window_size, 4]
+    ], axis=1)
 
-    return feats, p_min, p_max, p_denom
+    tech = CouncilOfAgents.technical_agent(prices_arr)
+    sent = CouncilOfAgents.sentiment_agent(fg_val)
+    x = torch.tensor(feats, dtype=torch.float32).unsqueeze(0).to(device)
+    a_op = torch.tensor([[tech, sent]], dtype=torch.float32).to(device)
+
+    with torch.no_grad():
+        preds = []
+        for key in ["recent", "historical"]:
+            if models.get(key) is not None:
+                pred = models[key](x, x, a_op).item()
+                preds.append(pred)
+        if not preds:
+            return None
+
+    pred_norm = preds[0] * 0.8 + (preds[1] if len(preds) > 1 else preds[0]) * 0.2
+    pred_norm = max(-0.5, min(1.5, pred_norm))
+    pred_final = (pred_norm * p_denom) + p_min
+    current_price = prices_arr[-1]
+    max_change = current_price * 0.10
+    pred_final = np.clip(pred_final, current_price - max_change, current_price + max_change)
+
+    return {
+        "predicted_price": float(pred_final),
+        "direction_prob": 0.5 + (0.5 if pred_final > current_price else -0.5) * 0.3,
+        "confidence": 0.3,  # baja confianza para legacy
+        "model_details": {"type": "legacy"},
+    }
+
+
+# ──────────────────────────────────────────────────────────────
+# Evaluación de precisión
+# ──────────────────────────────────────────────────────────────
+
+def _evaluate_past_predictions(redis_client, current_price: float):
+    """Evalúa predicciones pasadas comparando con el precio actual.
+
+    Para cada predicción de hace ~30-120s, calcula el error y actualiza
+    las métricas acumuladas de precisión en Redis.
+
+    Usa un Redis Set 'evaluated_timestamps' para evitar evaluar
+    la misma predicción múltiples veces.
+    """
+    try:
+        raw = redis_client.get("prediction_accuracy")
+        if raw:
+            acc = json.loads(raw)
+        else:
+            acc = {
+                "total_evaluated": 0,
+                "total_abs_error": 0.0,
+                "total_abs_pct_error": 0.0,
+                "correct_direction": 0,
+                "total_direction": 0,
+                "recent_errors": [],  # últimos 100 errores para gráfico
+            }
+
+        # Tomar predicciones recientes
+        history = redis_client.lrange("prediction_history", 0, 49)
+        now = time.time()
+        evaluated_count = 0
+
+        for entry_raw in history:
+            entry = json.loads(entry_raw)
+            age = now - entry["timestamp"]
+
+            # Solo evaluar predicciones de 30-120s de antigüedad
+            if age < 30 or age > 120:
+                continue
+
+            # Evitar re-evaluación usando Set de timestamps evaluados
+            ts_key = f"{entry['timestamp']:.4f}"
+            if redis_client.sismember("evaluated_timestamps", ts_key):
+                continue
+
+            predicted = entry["predicted_price"]
+            actual_at_prediction = entry["current_price"]
+
+            # Error absoluto y porcentual vs precio real actual
+            abs_error = abs(predicted - current_price)
+            pct_error = (abs_error / current_price) * 100
+
+            # Dirección correcta?
+            predicted_direction = "up" if predicted > actual_at_prediction else "down"
+            actual_direction = "up" if current_price > actual_at_prediction else "down"
+            direction_correct = predicted_direction == actual_direction
+
+            acc["total_evaluated"] += 1
+            acc["total_abs_error"] += abs_error
+            acc["total_abs_pct_error"] += pct_error
+            if direction_correct:
+                acc["correct_direction"] += 1
+            acc["total_direction"] += 1
+
+            # Guardar para gráfico reciente
+            acc["recent_errors"].append({
+                "timestamp": entry["timestamp"],
+                "pct_error": round(pct_error, 4),
+                "direction_correct": direction_correct,
+                "predicted": predicted,
+                "actual": current_price,
+            })
+            # Mantener solo últimos 100
+            acc["recent_errors"] = acc["recent_errors"][-100:]
+            evaluated_count += 1
+
+            # Marcar como evaluado
+            redis_client.sadd("evaluated_timestamps", ts_key)
+
+        # Limpiar timestamps viejos del Set (>5 min)
+        if evaluated_count > 0 or redis_client.scard("evaluated_timestamps") > 200:
+            all_ts = redis_client.smembers("evaluated_timestamps")
+            to_remove = [t for t in all_ts if (now - float(t)) > 300]
+            if to_remove:
+                redis_client.srem("evaluated_timestamps", *to_remove)
+
+        if evaluated_count > 0:
+            # Calcular métricas derivadas
+            n = acc["total_evaluated"]
+            acc["mae"] = round(acc["total_abs_error"] / n, 2) if n > 0 else 0
+            acc["mape"] = round(
+                acc["total_abs_pct_error"] / n, 4) if n > 0 else 0
+            acc["direction_accuracy"] = round(
+                (acc["correct_direction"] / acc["total_direction"]) * 100, 1
+            ) if acc["total_direction"] > 0 else 0
+
+            redis_client.set("prediction_accuracy", json.dumps(acc))
+
+    except Exception as e:
+        print(f"[WARN] Error evaluando precision: {e}")
 
 
 def run_inference():
+    """Loop principal de inferencia v3.
+
+    1. Intenta cargar ensemble (GB + RF + LSTM).
+    2. Si no existe, fallback a modelos TFT legacy.
+    3. Genera predicciones cada 30 segundos.
+    4. Filtra por confianza (solo publica si conf > umbral).
+    5. Evalúa precisión de predicciones pasadas.
+    """
     device = get_device()
     torch.set_num_threads(min(4, os.cpu_count() or 4))
     redis = get_redis_client()
 
-    # Cargar modelos con nueva arquitectura
-    model_hist = load_model("models/tft_historical.pth", device)
-    model_recent = load_model("models/tft_recent.pth", device)
+    # Intentar cargar ensemble
+    ensemble = load_ensemble_models(device)
+    use_ensemble = ensemble is not None
 
-    print("🤖 Servicio de Inferencia v2 (Dual Memory + Real Agents) Iniciado...")
+    if use_ensemble:
+        config = ensemble["config"]
+        conf_threshold = config.get("confidence_threshold", 0.3)
+        print(f"[START] Servicio de Inferencia v3 (Ensemble + Confianza) Iniciado")
+        print(f"   Modelos: GB={'OK' if ensemble.get('gb') else 'NO'} "
+              f"RF={'OK' if ensemble.get('rf') else 'NO'} "
+              f"LSTM={'OK' if ensemble.get('lstm') else 'NO'}")
+        print(f"   Umbral de confianza: {conf_threshold:.1%}")
+        val_results = config.get("validation_results", {})
+        if val_results:
+            print(f"   Accuracy validación: {val_results.get('ensemble_filtered_accuracy', 0):.1%}")
+    else:
+        # Fallback a legacy
+        legacy = load_legacy_models(device)
+        conf_threshold = 0.0  # sin filtro para legacy
+        print("[START] Servicio de Inferencia (Legacy TFT) Iniciado")
 
     catalog = get_iceberg_catalog()
     consecutive_errors = 0
+    predictions_made = 0
+    predictions_skipped = 0
 
     while True:
         try:
             # 1. Obtener datos recientes de BTC
             btc_data = get_btc_data(catalog)
 
-            if len(btc_data) < 15:
-                print(f"⌛ Esperando más datos BTC ({len(btc_data)}/15)...")
+            min_points = 30 if use_ensemble else 15
+            if len(btc_data) < min_points:
+                print(f"[WAIT] Esperando datos BTC ({len(btc_data)}/{min_points})...")
                 time.sleep(10)
                 continue
 
-            prices = [r["close"] for r in btc_data[-30:]]  # últimos 30 puntos
-            volumes = [r["total_volume"] for r in btc_data[-30:]]
+            # Usar hasta 60 puntos para features estables
+            data_slice = btc_data[-60:]
+            prices = [r["close"] for r in data_slice]
+            volumes = [r["total_volume"] for r in data_slice]
+            timestamps = [r["window_start"] for r in data_slice]
             current_price = prices[-1]
 
-            # 2. Señales de agentes REALES
+            # Fear & Greed
             fg_val = get_fear_greed(catalog)
-            tech_signal = CouncilOfAgents.technical_agent(prices)
-            sent_signal = CouncilOfAgents.sentiment_agent(fg_val)
 
-            # 3. Feature engineering (mismo pipeline que training)
-            feats, p_min, p_max, p_denom = build_inference_features(
-                prices, volumes, window_size=10
-            )
-
-            x = torch.tensor(
-                feats, dtype=torch.float32).unsqueeze(0).to(device)
-            a_op = torch.tensor([[tech_signal, sent_signal]],
-                                dtype=torch.float32).to(device)
-
-            # 4. Inferencia dual
-            with torch.no_grad():
-                pred_h = model_hist(x, x, a_op).item()
-                pred_r = model_recent(x, x, a_op).item()
-
-                # Ensemble: 80% reciente + 20% histórico
-                pred_norm = pred_r * 0.8 + pred_h * 0.2
-
-                # Clip normalizado
-                pred_norm = max(-0.5, min(1.5, pred_norm))
-
-                # De-normalizar
-                pred_final = (pred_norm * p_denom) + p_min
-
-                # Safety: max ±10% change
-                max_change = current_price * 0.10
-                pred_final = np.clip(
-                    pred_final,
-                    current_price - max_change,
-                    current_price + max_change,
+            if use_ensemble:
+                # ── Ensemble inference ──
+                features = build_feature_matrix(
+                    np.array(prices, dtype=np.float64),
+                    np.array(volumes, dtype=np.float64),
+                    timestamps=timestamps,
+                    fear_greed=fg_val,
                 )
 
+                prediction = ensemble_predict(ensemble, features, device)
+                if prediction is None:
+                    print("[WARN] Ensemble no pudo generar prediccion")
+                    time.sleep(30)
+                    continue
+
+                direction_prob = prediction["direction_prob"]
+                confidence = prediction["confidence"]
+                predicted_return = prediction["predicted_return"]
+
+                # Calcular precio predicho
+                # Clip return to ±5% (más conservador que legacy)
+                predicted_return = np.clip(predicted_return, -0.05, 0.05)
+                pred_final = current_price * (1.0 + predicted_return)
+
+                # Filtro de confianza
+                if confidence < conf_threshold:
+                    predictions_skipped += 1
+                    pred_final = current_price  # sin predicción → precio actual
+                    bias = "Neutral"
+                    if predictions_skipped % 10 == 1:
+                        print(
+                            f"[SKIP] Skipped (conf={confidence:.2f} < {conf_threshold:.2f}) "
+                            f"| total skipped: {predictions_skipped}"
+                        )
+                else:
+                    predictions_made += 1
+                    bias = "Bullish" if pred_final > current_price else "Bearish"
+
+                details = prediction["model_details"]
+                result = {
+                    "timestamp": time.time(),
+                    "coin_id": "bitcoin",
+                    "predicted_price": float(pred_final),
+                    "current_price": float(current_price),
+                    "confidence": float(confidence),
+                    "direction_probability": float(direction_prob),
+                    "memory_details": {
+                        "gb_prob": details.get("gb_prob"),
+                        "rf_prob": details.get("rf_prob"),
+                        "lstm_prob": details.get("lstm_prob"),
+                        "lstm_return": details.get("lstm_return"),
+                    },
+                    "agents": {
+                        "fear_greed": fg_val,
+                    },
+                    "sentiment_bias": bias,
+                    "model_version": "ensemble_v3",
+                }
+
+            else:
+                # ── Legacy TFT inference ──
+                prediction = legacy_predict(
+                    legacy, prices, volumes, fg_val, device,
+                )
+                if prediction is None:
+                    time.sleep(30)
+                    continue
+
+                pred_final = prediction["predicted_price"]
+                confidence = prediction["confidence"]
+                direction_prob = prediction["direction_prob"]
+                predictions_made += 1
+                bias = "Bullish" if pred_final > current_price else "Bearish"
+
+                result = {
+                    "timestamp": time.time(),
+                    "coin_id": "bitcoin",
+                    "predicted_price": float(pred_final),
+                    "current_price": float(current_price),
+                    "confidence": float(confidence),
+                    "direction_probability": float(direction_prob),
+                    "memory_details": prediction["model_details"],
+                    "agents": {"fear_greed": fg_val},
+                    "sentiment_bias": bias,
+                    "model_version": "legacy_tft",
+                }
+
             # 5. Publicar en Redis
-            result = {
+            redis.set("live_prediction", json.dumps(result))
+
+            # Guardar historial para tracking de precisión
+            history_entry = {
                 "timestamp": time.time(),
-                "coin_id": "bitcoin",
                 "predicted_price": float(pred_final),
                 "current_price": float(current_price),
-                "memory_details": {
-                    "historical": float(pred_h),
-                    "recent": float(pred_r),
-                },
-                "agents": {
-                    "technical": float(tech_signal),
-                    "sentiment": float(sent_signal),
-                    "fear_greed": fg_val,
-                },
-                "sentiment_bias": "Bullish" if pred_final > current_price else "Bearish",
+                "confidence": float(confidence),
+                "sentiment_bias": bias,
             }
+            redis.lpush("prediction_history", json.dumps(history_entry))
+            redis.ltrim("prediction_history", 0, 999)
 
-            redis.set("live_prediction", json.dumps(result))
+            # Evaluar predicciones pasadas
+            _evaluate_past_predictions(redis, float(current_price))
+
             diff_pct = ((pred_final - current_price) / current_price) * 100
+            model_tag = "ENS" if use_ensemble else "TFT"
             print(
-                f"✅ ${pred_final:,.2f} ({diff_pct:+.2f}%) "
-                f"| bias={result['sentiment_bias']} "
-                f"| tech={tech_signal:+.2f} sent={sent_signal:+.2f} "
-                f"| h={pred_h:.4f} r={pred_r:.4f}"
+                f"{'[OK]' if confidence >= conf_threshold else '[SKIP]'} "
+                f"${pred_final:,.2f} ({diff_pct:+.2f}%) "
+                f"| {model_tag} conf={confidence:.2f} "
+                f"| dir={direction_prob:.2f} "
+                f"| bias={bias} "
+                f"| made={predictions_made} skip={predictions_skipped}"
             )
             consecutive_errors = 0
 
         except Exception as e:
             consecutive_errors += 1
-            print(f"❌ Error inferencia ({consecutive_errors}): {e}")
+            print(f"[ERROR] Error inferencia ({consecutive_errors}): {e}")
+            import traceback
+            traceback.print_exc()
             if consecutive_errors > 5:
-                print("⚠️ Demasiados errores consecutivos, esperando 60s...")
+                print("[WARN] Demasiados errores, esperando 60s...")
                 time.sleep(60)
                 consecutive_errors = 0
 

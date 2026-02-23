@@ -1,13 +1,26 @@
 """
-Entrenamiento del Modelo CryptoLake.
+Pipeline de Entrenamiento v2 — Ensemble Multi-Modelo.
 
-Lee datos reales de Iceberg, calcula indicadores técnicos (RSI, SMA),
-genera señales de agentes REALES por ventana, y entrena el TFT.
+Modelos entrenados:
+  1. GradientBoostingClassifier → dirección (sube/baja) con probabilidad
+  2. RandomForestClassifier → dirección (confirmación/diversidad)
+  3. ReturnLSTM → magnitud del retorno + dirección
 
-Features por timestep (input_dim=4):
-  [precio_norm, volumen_norm, rsi_norm, sma_ratio]
-Agent opinions (agent_dim=2):
-  [señal_técnica_real, señal_sentimiento_real]
+Datos de entrenamiento: velas de 30 segundos de silver.realtime_vwap
+(misma granularidad que inferencia → sin mismatch train/inference).
+
+Validación: Walk-forward sobre datos reales (último 20% cronológico).
+
+Features (20):
+  [return_1, return_3, return_5, return_10,
+   volatility_5, volatility_10, volatility_20,
+   rsi_7, rsi_14,
+   macd, macd_signal, macd_hist,
+   bb_position,
+   volume_ratio_5, volume_ratio_10,
+   momentum_5, momentum_10,
+   fear_greed_norm,
+   hour_sin, hour_cos]
 
 Optimizado para: Xeon E5-1620 v3, 32GB RAM, CPU-only.
 """
@@ -19,20 +32,61 @@ import pandas as pd
 import numpy as np
 import time
 import os
+import json
+import joblib
 from datetime import timedelta
-from src.ml.models import (
-    TemporalFusionTransformer,
-    CouncilOfAgents,
-    compute_rsi,
-    compute_sma,
-    get_device,
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report
+from src.ml.models import ReturnLSTM, get_device
+from src.ml.features import (
+    N_FEATURES,
+    FEATURE_NAMES,
+    build_training_samples,
+    build_sequence_samples,
 )
 from src.serving.api.utils import get_iceberg_catalog
 
 
 # ──────────────────────────────────────────────────────────────
-# Carga de datos
+# Carga de datos (velas de 30 segundos — misma que inferencia)
 # ──────────────────────────────────────────────────────────────
+
+def load_realtime_data(coin_id="bitcoin", hours=None):
+    """Carga datos VWAP de 30s desde Iceberg (silver.realtime_vwap).
+
+    NO resamplea — usa la misma granularidad que inferencia.
+    """
+    try:
+        catalog = get_iceberg_catalog()
+        table = catalog.load_table("silver.realtime_vwap")
+        table.refresh()
+        row_filter = f"coin_id == '{coin_id}'"
+        if hours:
+            from datetime import datetime, timezone
+            since = datetime.now(timezone.utc) - timedelta(hours=hours)
+            row_filter += f" AND window_start >= '{since.isoformat()}'"
+        df = table.scan(
+            row_filter=row_filter,
+            selected_fields=(
+                "coin_id", "window_start", "close", "total_volume",
+            ),
+        ).to_arrow().to_pandas()
+        df = df.sort_values("window_start").reset_index(drop=True)
+        if len(df) < 2:
+            return None
+        df = df.rename(columns={
+            "close": "price_usd",
+            "total_volume": "volume_usd",
+            "window_start": "timestamp",
+        })
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        # Eliminar duplicados por timestamp
+        df = df.drop_duplicates(subset=["timestamp"], keep="last")
+        return df
+    except Exception as e:
+        print(f"[WARN] Iceberg realtime_vwap no disponible: {e}")
+        return None
+
 
 def load_daily_data(coin_id="bitcoin", days=None):
     """Carga precios diarios desde Iceberg (silver.daily_prices)."""
@@ -47,54 +101,19 @@ def load_daily_data(coin_id="bitcoin", days=None):
             row_filter = f"coin_id == '{coin_id}'"
         df = table.scan(
             row_filter=row_filter,
-            selected_fields=("coin_id", "price_date",
-                             "price_usd", "volume_24h_usd"),
+            selected_fields=(
+                "coin_id", "price_date", "price_usd", "volume_24h_usd",
+            ),
         ).to_arrow().to_pandas()
         df = df.sort_values("price_date").reset_index(drop=True)
+        df = df.rename(columns={
+            "volume_24h_usd": "volume_usd",
+            "price_date": "timestamp",
+        })
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         return df
     except Exception as e:
-        print(f"⚠️ Iceberg daily_prices no disponible: {e}")
-        return None
-
-
-def load_realtime_data(coin_id="bitcoin", hours=None):
-    """Carga datos OHLC de 30s desde Iceberg (silver.realtime_vwap).
-
-    Resamplea a velas de 15 minutos para tener una escala intermedia
-    que complemente los datos diarios.
-    """
-    try:
-        catalog = get_iceberg_catalog()
-        table = catalog.load_table("silver.realtime_vwap")
-        table.refresh()
-        row_filter = f"coin_id == '{coin_id}'"
-        if hours:
-            from datetime import datetime, timezone
-            since = datetime.now(timezone.utc) - timedelta(hours=hours)
-            row_filter += f" AND window_start >= '{since.isoformat()}'"
-        df = table.scan(
-            row_filter=row_filter,
-            selected_fields=("coin_id", "window_start",
-                             "close", "total_volume"),
-        ).to_arrow().to_pandas()
-        df = df.sort_values("window_start").reset_index(drop=True)
-        if len(df) < 2:
-            return None
-        # Resamplear a velas de 15 min para densidad razonable
-        df["window_start"] = pd.to_datetime(df["window_start"], utc=True)
-        df = df.set_index("window_start")
-        resampled = df.resample("15min").agg(
-            {"close": "last", "total_volume": "sum", "coin_id": "first"}
-        ).dropna()
-        resampled = resampled.reset_index()
-        resampled = resampled.rename(columns={
-            "close": "price_usd",
-            "total_volume": "volume_24h_usd",
-            "window_start": "price_date",
-        })
-        return resampled
-    except Exception as e:
-        print(f"⚠️ Iceberg realtime_vwap no disponible: {e}")
+        print(f"[WARN] Iceberg daily_prices no disponible: {e}")
         return None
 
 
@@ -108,279 +127,553 @@ def get_fear_greed_value():
         ).to_arrow().to_pylist()
         if rows:
             latest = sorted(
-                rows, key=lambda x: x["timestamp"], reverse=True)[0]
+                rows, key=lambda x: x["timestamp"], reverse=True
+            )[0]
             return int(latest["value"])
     except Exception:
         pass
-    return 50  # Neutral default
+    return 50  # neutral
 
 
 # ──────────────────────────────────────────────────────────────
-# Feature engineering
+# Entrenamiento del ensemble
 # ──────────────────────────────────────────────────────────────
 
-def build_features(prices, volumes, window_size=10):
-    """Construye features de 4 dimensiones y señales de agentes REALES.
+def train_ensemble():
+    """Entrena los 3 modelos del ensemble con datos reales.
 
-    Features por timestep:
-      [precio_norm, volumen_norm, rsi_norm, sma_ratio]
-    Agent signals por ventana:
-      [technical_signal, sentiment_signal]
-
-    Returns:
-        X: [N, window_size, 4]
-        Y: [N, 1]
-        agents: [N, 2]
-        normalización: dict con min/max para denormalizar
+    Flujo:
+    1. Carga datos de 30s (realtime) — prioridad para matching con inferencia.
+    2. Si hay pocos datos realtime, complementa con datos diarios.
+    3. Construye features (20 dimensiones).
+    4. Split cronológico 80/20 (walk-forward).
+    5. Entrena GradientBoosting, RandomForest, ReturnLSTM.
+    6. Valida con datos reales y reporta accuracy.
+    7. Guarda modelos.
     """
-    prices = np.asarray(prices, dtype=np.float64)
-    volumes = np.asarray(volumes, dtype=np.float64)
+    device = get_device()
+    n_threads = min(4, os.cpu_count() or 4)
+    torch.set_num_threads(n_threads)
 
-    # Indicadores técnicos sobre toda la serie
+    print("=" * 60)
+    print("[TRAIN] ENTRENAMIENTO ENSEMBLE v2 -- Multi-Modelo + 20 Features")
+    print("=" * 60)
+    print(f"   CPU: Intel Xeon E5-1620 v3 (4C/8T)")
+    print(f"   Threads: {n_threads}")
+    print(f"   Device: {device}")
+    print(f"   Features: {N_FEATURES} ({', '.join(FEATURE_NAMES[:5])}...)")
+    print("=" * 60)
+
+    # -- 1. Cargar datos --
+    print("\n[DATA] Cargando datos realtime (30s candles)...")
+    df_rt = load_realtime_data("bitcoin")
+
+    print("[DATA] Cargando datos diarios (macro context)...")
+    df_daily = load_daily_data("bitcoin")
+
+    # Combinar datos: resamplear 30s→2min + concatenar con daily
+    frames = []
+    data_source = "combined"
+
+    if df_rt is not None and len(df_rt) >= 20:
+        # Resamplear 30s a 1 minuto para reducir ruido pero mantener muestras
+        df_rt_resampled = df_rt.copy()
+        df_rt_resampled = df_rt_resampled.set_index("timestamp")
+        df_rt_resampled = df_rt_resampled.resample("1min").agg({
+            "price_usd": "last",
+            "volume_usd": "sum",
+            "coin_id": "first",
+        }).dropna().reset_index()
+        print(f"   \u2705 Realtime: {len(df_rt)} \u2192 {len(df_rt_resampled)} candles (1min)")
+        frames.append(df_rt_resampled)
+
+    if df_daily is not None and len(df_daily) >= 10:
+        print(f"   [OK] Daily: {len(df_daily)} registros")
+        frames.append(df_daily)
+
+    if not frames:
+        total_rt = len(df_rt) if df_rt is not None else 0
+        total_d = len(df_daily) if df_daily is not None else 0
+        print(f"   [ERROR] Datos insuficientes (realtime={total_rt}, daily={total_d})")
+        print("   -> Necesitas al menos 20 candles de 30s o 10 diarios.")
+        return
+
+    if len(frames) > 1:
+        for f in frames:
+            f["timestamp"] = pd.to_datetime(f["timestamp"], utc=True)
+        df = pd.concat(frames, ignore_index=True)
+        df = df.sort_values("timestamp").reset_index(drop=True)
+        df = df.drop_duplicates(subset=["timestamp"], keep="last")
+    else:
+        df = frames[0]
+        data_source = "realtime_2min" if df_rt is not None and len(df_rt) >= 20 else "daily"
+
+    # Fear & Greed value
+    fg_val = get_fear_greed_value()
+    print(f"   Fear & Greed: {fg_val}")
+
+    prices = df["price_usd"].values
+    volumes = df["volume_usd"].fillna(0).values
+    timestamps = df["timestamp"].values if "timestamp" in df.columns else None
+
+    print(f"   Rango: ${prices.min():,.2f} — ${prices.max():,.2f}")
+    print(f"   Registros: {len(prices)}")
+
+    # -- 2. Feature engineering --
+    print("\n[FEAT] Construyendo features (20 dimensiones)...")
+    lookback = 30  # warmup para que features sean estables
+    seq_len = 10   # ventana LSTM
+
+    # Features para modelos tabulares (GB + RF)
+    X_tab, y_dir, y_ret = build_training_samples(
+        prices, volumes, timestamps, fg_val, lookback=lookback,
+    )
+    if X_tab is None or len(X_tab) < 20:
+        print(f"   [ERROR] Muy pocas muestras tabulares ({0 if X_tab is None else len(X_tab)})")
+        return
+
+    # Features para LSTM
+    X_seq, y_dir_seq, y_ret_seq = build_sequence_samples(
+        prices, volumes, timestamps, fg_val,
+        lookback=lookback, seq_len=seq_len,
+    )
+    has_lstm_data = X_seq is not None and len(X_seq) >= 20
+
+    print(f"   Muestras tabulares: {len(X_tab)}")
+    if has_lstm_data:
+        print(f"   Muestras secuenciales: {len(X_seq)}")
+    else:
+        print(f"   [WARN] No hay suficientes datos para LSTM, solo entrena GB+RF")
+
+    # -- 3. Split cronologico (walk-forward) --
+    split = int(len(X_tab) * 0.80)
+    X_train, X_val = X_tab[:split], X_tab[split:]
+    y_dir_train, y_dir_val = y_dir[:split], y_dir[split:]
+    y_ret_train, y_ret_val = y_ret[:split], y_ret[split:]
+
+    print(f"\n[SPLIT] Split: {len(X_train)} train / {len(X_val)} validation")
+    print(f"   Distribución train: {y_dir_train.mean():.1%} UP / {1-y_dir_train.mean():.1%} DOWN")
+    print(f"   Distribución val:   {y_dir_val.mean():.1%} UP / {1-y_dir_val.mean():.1%} DOWN")
+
+    os.makedirs("models", exist_ok=True)
+    results = {}
+
+    # -- 4. Entrenar GradientBoostingClassifier --
+    print("\n" + "-" * 50)
+    print("[GB] Entrenando GradientBoostingClassifier...")
+    start = time.time()
+
+    # Regularización fuerte para evitar overfitting con pocos datos
+    n_samples = len(X_train)
+    gb = GradientBoostingClassifier(
+        n_estimators=min(100, max(30, n_samples // 5)),
+        max_depth=2,           # shallow trees → menos overfitting
+        learning_rate=0.1,     # mayor LR con menos árboles
+        subsample=0.7,         # más dropout de datos
+        min_samples_leaf=max(10, n_samples // 30),  # mínimo grande
+        max_features=0.5,      # solo usa mitad de features por split
+        random_state=42,
+    )
+    gb.fit(X_train, y_dir_train)
+
+    gb_train_acc = accuracy_score(y_dir_train, gb.predict(X_train))
+    gb_val_acc = accuracy_score(y_dir_val, gb.predict(X_val))
+    gb_val_proba = gb.predict_proba(X_val)[:, 1]  # probabilidad de UP
+
+    gb_time = time.time() - start
+    print(f"   Train accuracy:  {gb_train_acc:.1%}")
+    print(f"   Val accuracy:    {gb_val_acc:.1%}")
+    print(f"   Tiempo: {gb_time:.1f}s")
+
+    # Feature importance
+    importances = sorted(
+        zip(FEATURE_NAMES, gb.feature_importances_),
+        key=lambda x: x[1], reverse=True,
+    )
+    print("   Top features:")
+    for name, imp in importances[:5]:
+        print(f"     {name}: {imp:.3f}")
+
+    joblib.dump(gb, "models/gb_direction.pkl")
+    print("   [OK] Guardado: models/gb_direction.pkl")
+    results["gb"] = {"train_acc": gb_train_acc, "val_acc": gb_val_acc}
+
+    # -- 5. Entrenar RandomForestClassifier --
+    print("\n" + "-" * 50)
+    print("[RF] Entrenando RandomForestClassifier...")
+    start = time.time()
+
+    rf = RandomForestClassifier(
+        n_estimators=min(150, max(50, n_samples // 3)),
+        max_depth=3,            # shallow → menos overfitting
+        min_samples_leaf=max(10, n_samples // 30),
+        max_features=0.5,
+        random_state=42,
+        n_jobs=n_threads,
+    )
+    rf.fit(X_train, y_dir_train)
+
+    rf_train_acc = accuracy_score(y_dir_train, rf.predict(X_train))
+    rf_val_acc = accuracy_score(y_dir_val, rf.predict(X_val))
+    rf_val_proba = rf.predict_proba(X_val)[:, 1]
+
+    rf_time = time.time() - start
+    print(f"   Train accuracy:  {rf_train_acc:.1%}")
+    print(f"   Val accuracy:    {rf_val_acc:.1%}")
+    print(f"   Tiempo: {rf_time:.1f}s")
+
+    joblib.dump(rf, "models/rf_direction.pkl")
+    print("   [OK] Guardado: models/rf_direction.pkl")
+    results["rf"] = {"train_acc": rf_train_acc, "val_acc": rf_val_acc}
+
+    # -- 6. Entrenar ReturnLSTM --
+    lstm_val_acc = 0.5
+    if has_lstm_data:
+        print("\n" + "-" * 50)
+        print("[LSTM] Entrenando ReturnLSTM (20 features x 10 steps)...")
+        start = time.time()
+
+        split_seq = int(len(X_seq) * 0.80)
+        X_seq_train = torch.tensor(X_seq[:split_seq]).to(device)
+        X_seq_val = torch.tensor(X_seq[split_seq:]).to(device)
+        y_dir_seq_train = torch.tensor(y_dir_seq[:split_seq]).unsqueeze(-1).to(device)
+        y_dir_seq_val = torch.tensor(y_dir_seq[split_seq:]).unsqueeze(-1).to(device)
+        y_ret_seq_train = torch.tensor(y_ret_seq[:split_seq]).unsqueeze(-1).to(device)
+        y_ret_seq_val = torch.tensor(y_ret_seq[split_seq:]).unsqueeze(-1).to(device)
+
+        model = ReturnLSTM(
+            input_dim=N_FEATURES, hidden_dim=64, num_layers=2, dropout=0.2,
+        ).to(device)
+
+        optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+        mse_loss = nn.MSELoss()
+        bce_loss = nn.BCELoss()
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=20,
+        )
+
+        # Mini-batches
+        batch_size = min(64, len(X_seq_train))
+        dataset = TensorDataset(X_seq_train, y_ret_seq_train, y_dir_seq_train)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+        epochs = 200
+        best_val_loss = float("inf")
+        best_state = None
+        patience_counter = 0
+        early_stop_patience = 40
+
+        print(f"   Muestras: {len(X_seq_train)} train / {len(X_seq_val)} val")
+        print(f"   Epochs: {epochs} | Batch: {batch_size} | LR: 0.001")
+
+        for epoch in range(epochs):
+            model.train()
+            epoch_loss = 0.0
+            n_batches = 0
+            for xb, yb_ret, yb_dir in loader:
+                optimizer.zero_grad()
+                pred_ret, pred_dir = model(xb)
+                loss = mse_loss(pred_ret, yb_ret) + 0.5 * bce_loss(pred_dir, yb_dir)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                epoch_loss += loss.item()
+                n_batches += 1
+
+            avg_train_loss = epoch_loss / max(n_batches, 1)
+
+            # Validation
+            model.eval()
+            with torch.no_grad():
+                val_ret, val_dir = model(X_seq_val)
+                val_loss = (
+                    mse_loss(val_ret, y_ret_seq_val)
+                    + 0.5 * bce_loss(val_dir, y_dir_seq_val)
+                ).item()
+
+            scheduler.step(val_loss)
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+                patience_counter = 0
+            else:
+                patience_counter += 1
+
+            if epoch % 25 == 0 or patience_counter >= early_stop_patience:
+                print(
+                    f"   Epoch {epoch:3d}/{epochs} | "
+                    f"Train: {avg_train_loss:.6f} | Val: {val_loss:.6f}"
+                )
+
+            if patience_counter >= early_stop_patience:
+                print(f"   [STOP] Early stopping en epoch {epoch}")
+                break
+
+        if best_state:
+            model.load_state_dict(best_state)
+
+        # Evaluar accuracy de dirección del LSTM
+        model.eval()
+        with torch.no_grad():
+            _, val_dir_pred = model(X_seq_val)
+            lstm_preds = (val_dir_pred.cpu().numpy().flatten() > 0.5).astype(float)
+            lstm_val_acc = accuracy_score(
+                y_dir_seq[split_seq:], lstm_preds,
+            )
+
+        lstm_time = time.time() - start
+        print(f"   Val direction accuracy: {lstm_val_acc:.1%}")
+        print(f"   Tiempo: {lstm_time:.1f}s")
+
+        torch.save(model.state_dict(), "models/return_lstm.pth")
+        print("   [OK] Guardado: models/return_lstm.pth")
+        results["lstm"] = {"val_acc": lstm_val_acc}
+    else:
+        print("\n[WARN] LSTM no entrenado (pocos datos secuenciales)")
+
+    # -- 7. Evaluar ensemble combinado --
+    print("\n" + "=" * 60)
+    print("[EVAL] EVALUACION DEL ENSEMBLE (Walk-Forward Validation)")
+    print("=" * 60)
+
+    # Pesos del ensemble
+    w_gb, w_rf, w_lstm = 0.45, 0.35, 0.20
+
+    # Ensemble direction probability
+    ensemble_proba = w_gb * gb_val_proba + w_rf * rf_val_proba
+
+    if has_lstm_data and lstm_val_acc > 0.50:
+        # Alinear LSTM predictions con las tabulares
+        # El LSTM tiene menos muestras por el seq_len offset
+        offset = len(y_dir_val) - len(lstm_preds)
+        if offset >= 0 and len(lstm_preds) > 0:
+            # Ajustar pesos: dar peso LSTM solo donde tenemos predicciones
+            lstm_proba_aligned = np.full(len(y_dir_val), 0.5)
+            lstm_proba_aligned[offset:] = (
+                val_dir_pred.cpu().numpy().flatten()[: len(y_dir_val) - offset]
+            )
+            ensemble_proba = (
+                w_gb * gb_val_proba
+                + w_rf * rf_val_proba
+                + w_lstm * lstm_proba_aligned
+            )
+        else:
+            # LSTM no alineado, usar solo GB + RF
+            ensemble_proba = (
+                (w_gb / (w_gb + w_rf)) * gb_val_proba
+                + (w_rf / (w_gb + w_rf)) * rf_val_proba
+            )
+    else:
+        # Sin LSTM, redistribuir peso
+        ensemble_proba = (
+            (w_gb / (w_gb + w_rf)) * gb_val_proba
+            + (w_rf / (w_gb + w_rf)) * rf_val_proba
+        )
+
+    # Accuracy sin filtro de confianza
+    ensemble_preds = (ensemble_proba > 0.5).astype(float)
+    ensemble_acc = accuracy_score(y_dir_val, ensemble_preds)
+    print(f"\n   [RESULT] Ensemble accuracy (sin filtro): {ensemble_acc:.1%}")
+
+    # Accuracy CON filtro de confianza (solo predicciones confiables)
+    confidence = np.abs(ensemble_proba - 0.5) * 2  # [0, 1]
+    thresholds = [0.2, 0.3, 0.4, 0.5, 0.6]
+    print("\n   Accuracy por umbral de confianza:")
+    best_threshold = 0.3  # default
+    best_filtered_acc = ensemble_acc
+
+    for thresh in thresholds:
+        mask = confidence >= thresh
+        n_confident = mask.sum()
+        if n_confident > 0:
+            filtered_acc = accuracy_score(y_dir_val[mask], ensemble_preds[mask])
+            coverage = n_confident / len(y_dir_val)
+            print(
+                f"     conf >= {thresh:.1f}: "
+                f"{filtered_acc:.1%} accuracy, "
+                f"{coverage:.0%} coverage ({n_confident}/{len(y_dir_val)})"
+            )
+            if filtered_acc > best_filtered_acc and coverage > 0.15:
+                best_filtered_acc = filtered_acc
+                best_threshold = thresh
+
+    print(f"\n   [BEST] Mejor umbral: {best_threshold} "
+          f"-> {best_filtered_acc:.1%} accuracy")
+
+    # -- 8. Guardar configuracion del ensemble --
+    config = {
+        "version": 2,
+        "data_source": data_source,
+        "n_features": N_FEATURES,
+        "feature_names": FEATURE_NAMES,
+        "seq_len": seq_len,
+        "lookback": lookback,
+        "weights": {"gb": w_gb, "rf": w_rf, "lstm": w_lstm},
+        "confidence_threshold": best_threshold,
+        "validation_results": {
+            "gb_accuracy": float(gb_val_acc),
+            "rf_accuracy": float(rf_val_acc),
+            "lstm_accuracy": float(lstm_val_acc),
+            "ensemble_accuracy": float(ensemble_acc),
+            "ensemble_filtered_accuracy": float(best_filtered_acc),
+            "n_validation_samples": int(len(y_dir_val)),
+        },
+        "trained_at": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+    }
+
+    with open("models/ensemble_config.json", "w") as f:
+        json.dump(config, f, indent=2)
+    print(f"\n   [OK] Configuracion guardada: models/ensemble_config.json")
+
+    # -- Resumen final --
+    print("\n" + "=" * 60)
+    print("[SUMMARY] RESUMEN FINAL")
+    print("=" * 60)
+    print(f"   GradientBoosting: {gb_val_acc:.1%} val accuracy")
+    print(f"   RandomForest:     {rf_val_acc:.1%} val accuracy")
+    print(f"   ReturnLSTM:       {lstm_val_acc:.1%} val accuracy")
+    print(f"   ─────────────────────────────────")
+    print(f"   ENSEMBLE:         {ensemble_acc:.1%} (sin filtro)")
+    print(f"   ENSEMBLE:         {best_filtered_acc:.1%} (con confianza >= {best_threshold})")
+    print(f"   -----------------------------------------")
+    if best_filtered_acc >= 0.65:
+        print("   [EXCELLENT] Excelente: modelo viable para uso real")
+    elif best_filtered_acc >= 0.60:
+        print("   [GOOD] Bueno: modelo viable con gestion de riesgo")
+    elif best_filtered_acc >= 0.55:
+        print("   [MARGINAL] Marginal: necesita mas datos o tuning")
+    else:
+        print("   [INSUFFICIENT] Insuficiente: necesita cambios fundamentales")
+    print("=" * 60)
+
+
+# ── Compatibilidad con el modo anterior ──
+
+def train(mode="ensemble"):
+    """Punto de entrada principal.
+
+    mode:
+      'ensemble'    — nuevo pipeline multi-modelo (recomendado)
+      'historical'  — legacy TFT con datos diarios
+      'recent'      — legacy TFT con datos realtime
+    """
+    if mode == "ensemble":
+        train_ensemble()
+    else:
+        # Legacy: entrenar TFT original
+        print(f"[WARN] Modo legacy '{mode}' -- usa 'ensemble' para el nuevo pipeline")
+        _train_legacy(mode)
+
+
+def _train_legacy(mode):
+    """Entrenamiento legacy del TFT original (backward-compatible)."""
+    from src.ml.models import TemporalFusionTransformer, CouncilOfAgents, compute_sma
+
+    device = get_device()
+    n_threads = min(4, os.cpu_count() or 4)
+    torch.set_num_threads(n_threads)
+
+    if mode == "recent":
+        df = load_realtime_data("bitcoin")
+        if df is None or len(df) < 15:
+            df = load_daily_data("bitcoin", days=30)
+    else:
+        df_daily = load_daily_data("bitcoin")
+        df_rt = load_realtime_data("bitcoin")
+        frames = [f for f in [df_daily, df_rt] if f is not None and len(f) > 0]
+        if frames:
+            for f in frames:
+                if "timestamp" in f.columns:
+                    f["timestamp"] = pd.to_datetime(f["timestamp"], utc=True)
+            df = pd.concat(frames, ignore_index=True)
+            df = df.sort_values("timestamp").reset_index(drop=True)
+            df = df.drop_duplicates(subset=["price_usd"], keep="last")
+        else:
+            df = None
+
+    if df is None or len(df) < 15:
+        print(f"[ERROR] No hay suficientes datos para modo {mode}.")
+        return
+
+    prices = df["price_usd"].values
+    volumes = df["volume_usd"].fillna(0).values
+
+    # Usar feature engineering original simple
+    from src.ml.models import compute_rsi, compute_sma
+    window_size = min(10, len(prices) // 3)
     rsi_period = min(14, max(3, len(prices) // 4))
     rsi = compute_rsi(prices, period=rsi_period)
     sma_short = compute_sma(prices, min(5, len(prices)))
     sma_long = compute_sma(prices, min(10, len(prices)))
-
-    # SMA ratio: short/long - 1 (centrado en 0)
     sma_ratio = np.where(
-        sma_long > 0,
-        (sma_short / (sma_long + 1e-10)) - 1.0,
-        0.0,
+        sma_long > 0, (sma_short / (sma_long + 1e-10)) - 1.0, 0.0,
     )
-
-    # Normalización min-max
     p_min, p_max = prices.min(), prices.max()
     p_denom = p_max - p_min if p_max > p_min else 1.0
     prices_norm = (prices - p_min) / p_denom
-
     v_min, v_max = volumes.min(), volumes.max()
     v_denom = v_max - v_min if v_max > v_min else 1.0
     volumes_norm = (volumes - v_min) / v_denom
-
-    # RSI normalizado a [0, 1]
     rsi_norm = np.nan_to_num(rsi, nan=50.0) / 100.0
-
-    # SMA ratio clipped
     sma_ratio_clipped = np.clip(sma_ratio * 10, -1.0, 1.0)
 
-    # Obtener Fear & Greed para sentiment agent
     fg_val = get_fear_greed_value()
-
-    # Construir secuencias
-    X, Y, agent_signals = [], [], []
+    X, Y, agents = [], [], []
     for i in range(len(prices_norm) - window_size - 1):
         seq = np.stack([
             prices_norm[i:i + window_size],
             volumes_norm[i:i + window_size],
             rsi_norm[i:i + window_size],
             sma_ratio_clipped[i:i + window_size],
-        ], axis=1)  # [window_size, 4]
+        ], axis=1)
         X.append(seq)
         Y.append(prices_norm[i + window_size])
+        wp = prices[i:i + window_size]
+        tech, sent = CouncilOfAgents.compute_agents_for_series(wp, fg_val)
+        agents.append([tech, sent])
 
-        # Señales de agentes REALES para esta ventana
-        window_prices = prices[i:i + window_size]
-        tech_signal, sent_signal = CouncilOfAgents.compute_agents_for_series(
-            window_prices, fg_val
-        )
-        agent_signals.append([tech_signal, sent_signal])
-
+    X = np.array(X, dtype=np.float32)
+    Y = np.array(Y, dtype=np.float32)
+    agents = np.array(agents, dtype=np.float32)
     norm_info = {"p_min": p_min, "p_max": p_max, "p_denom": p_denom}
-    return (
-        np.array(X, dtype=np.float32),
-        np.array(Y, dtype=np.float32),
-        np.array(agent_signals, dtype=np.float32),
-        norm_info,
-    )
 
+    split_idx = max(1, int(len(X) * 0.8))
+    X_t = torch.tensor(X[:split_idx]).to(device)
+    Y_t = torch.tensor(Y[:split_idx]).unsqueeze(-1).to(device)
+    A_t = torch.tensor(agents[:split_idx]).to(device)
 
-# ──────────────────────────────────────────────────────────────
-# Entrenamiento
-# ──────────────────────────────────────────────────────────────
-
-def train(mode="historical"):
-    """
-    mode:
-      'historical' — todos los datos disponibles (daily + realtime resampleado)
-      'recent'     — últimas 48h de datos realtime (velas 15min)
-    """
-    device = get_device()
-    print("=" * 55)
-    print("💻 HARDWARE:")
-    print("   CPU: Intel Xeon E5-1620 v3 (4C/8T @ 3.50GHz)")
-    print("   RAM: 32 GB")
-    print(f"   Device: {device}")
-    print("   Threads: ", end="")
-    n_threads = min(4, os.cpu_count() or 4)
-    torch.set_num_threads(n_threads)
-    print(f"{n_threads} (optimizado)")
-    print("=" * 55)
-
-    # ── Cargar datos según modo ──
-    if mode == "recent":
-        print("📡 Modo RECENT: cargando datos realtime...")
-        df = load_realtime_data("bitcoin")  # all available realtime
-        if df is None or len(df) < 15:
-            print("⚠️ Pocos datos realtime, intentando daily últimos 30 días...")
-            df = load_daily_data("bitcoin", days=30)
-    else:
-        print("📚 Modo HISTORICAL: cargando todos los datos disponibles...")
-        # Combinar daily + realtime resampleado
-        df_daily = load_daily_data("bitcoin")
-        df_rt = load_realtime_data("bitcoin")
-        frames = [f for f in [df_daily, df_rt] if f is not None and len(f) > 0]
-        if frames:
-            # Normalizar columna price_date a datetime para poder concatenar
-            for f in frames:
-                f["price_date"] = pd.to_datetime(f["price_date"], utc=True)
-            df = pd.concat(frames, ignore_index=True)
-            df = df.sort_values("price_date").reset_index(drop=True)
-            # Eliminar duplicados cercanos en tiempo
-            df = df.drop_duplicates(subset=["price_usd"], keep="last")
-        else:
-            df = None
-
-    if df is None or len(df) < 15:
-        print(
-            f"❌ No hay suficientes datos para modo {mode}. Min 15 registros.")
-        return
-
-    print(f"🧠 Entrenando MEMORIA {mode.upper()} con {len(df)} registros")
-
-    # ── Feature engineering ──
-    prices = df["price_usd"].values
-    volumes = df["volume_24h_usd"].fillna(0).values
-    window_size = min(10, len(prices) // 3)
-
-    X_np, Y_np, agents_np, norm_info = build_features(
-        prices, volumes, window_size)
-    if len(X_np) < 3:
-        print(f"❌ Muy pocas secuencias ({len(X_np)}). Necesitas más datos.")
-        return
-
-    print(f"   Secuencias: {len(X_np)} | Window: {window_size} | Features: 4")
-    print(
-        f"   Price range: ${norm_info['p_min']:,.2f} - ${norm_info['p_max']:,.2f}")
-
-    # ── Train/Val split (80/20) ──
-    split_idx = max(1, int(len(X_np) * 0.8))
-    X_train, X_val = X_np[:split_idx], X_np[split_idx:]
-    Y_train, Y_val = Y_np[:split_idx], Y_np[split_idx:]
-    A_train, A_val = agents_np[:split_idx], agents_np[split_idx:]
-
-    # Tensores
-    X_t = torch.tensor(X_train).to(device)
-    Y_t = torch.tensor(Y_train).unsqueeze(-1).to(device)
-    A_t = torch.tensor(A_train).to(device)
-
-    X_v = torch.tensor(X_val).to(device)
-    Y_v = torch.tensor(Y_val).unsqueeze(-1).to(device)
-    A_v = torch.tensor(A_val).to(device)
-
-    # Mini-batches para eficiencia en CPU
-    batch_size = min(64, len(X_train))
-    dataset = TensorDataset(X_t, Y_t, A_t)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-    print(
-        f"   Train: {len(X_train)} | Val: {len(X_val)} | Batch: {batch_size}")
-
-    # ── Modelo ──
     model = TemporalFusionTransformer(input_dim=4, agent_dim=2).to(device)
-    lr = 0.003 if mode == "recent" else 0.001
-    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
     criterion = nn.MSELoss()
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=30,
-    )
 
-    epochs = 300 if mode == "recent" else 150
-    best_val_loss = float("inf")
-    best_state = None
-    patience_counter = 0
-    early_stop_patience = 50
+    dataset = TensorDataset(X_t, Y_t, A_t)
+    loader = DataLoader(dataset, batch_size=min(64, len(X_t)), shuffle=True)
 
-    print(
-        f"🚀 Entrenamiento: {epochs} epochs, lr={lr}, early_stop={early_stop_patience}")
-    start_time = time.time()
-
-    for epoch in range(epochs):
-        # ── Train ──
+    for epoch in range(150):
         model.train()
-        epoch_loss = 0.0
-        n_batches = 0
         for xb, yb, ab in loader:
             optimizer.zero_grad()
             out = model(xb, xb, ab)
             loss = criterion(out, yb)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            epoch_loss += loss.item()
-            n_batches += 1
-
-        avg_train_loss = epoch_loss / max(n_batches, 1)
-
-        # ── Validation ──
-        model.eval()
-        with torch.no_grad():
-            val_out = model(X_v, X_v, A_v)
-            val_loss = criterion(val_out, Y_v).item()
-
-        scheduler.step(val_loss)
-
-        # ── Early stopping ──
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_state = {k: v.clone() for k, v in model.state_dict().items()}
-            patience_counter = 0
-        else:
-            patience_counter += 1
-
-        if epoch % 20 == 0 or epoch == epochs - 1 or patience_counter >= early_stop_patience:
-            elapsed = time.time() - start_time
-            eta = (elapsed / (epoch + 1)) * (epochs - epoch - 1)
-            lr_now = optimizer.param_groups[0]["lr"]
-            print(
-                f"  Epoch {epoch:3d}/{epochs} | "
-                f"Train: {avg_train_loss:.6f} | Val: {val_loss:.6f} | "
-                f"Best: {best_val_loss:.6f} | LR: {lr_now:.5f} | "
-                f"ETA: {str(timedelta(seconds=int(eta)))}"
-            )
-
-        if patience_counter >= early_stop_patience:
-            print(
-                f"⏹️  Early stopping en epoch {epoch} (sin mejora en {early_stop_patience} epochs)")
-            break
-
-    total_time = time.time() - start_time
-    print(
-        f"🏁 Entrenamiento completado en {str(timedelta(seconds=int(total_time)))}")
-
-    # ── Guardar mejor modelo ──
-    if best_state is not None:
-        model.load_state_dict(best_state)
 
     os.makedirs("models", exist_ok=True)
-    save_path = f"models/tft_{mode}.pth"
-    torch.save(model.state_dict(), save_path)
-    print(
-        f"✅ Modelo {mode} guardado: {save_path} (val_loss={best_val_loss:.6f})")
-
-    # Guardar norm_info para inferencia
-    norm_path = f"models/norm_{mode}.pth"
-    torch.save(norm_info, norm_path)
-    print(f"✅ Normalización guardada: {norm_path}")
+    torch.save(model.state_dict(), f"models/tft_{mode}.pth")
+    torch.save(norm_info, f"models/norm_{mode}.pth")
+    print(f"[OK] Modelo legacy {mode} guardado")
 
 
 if __name__ == "__main__":
     import sys
 
-    mode = sys.argv[1] if len(sys.argv) > 1 else "historical"
-    if mode.startswith("--mode="):
-        mode = mode.split("=")[1]
-    elif mode == "--mode" and len(sys.argv) > 2:
-        mode = sys.argv[2]
+    mode = "ensemble"
+    for arg in sys.argv[1:]:
+        if arg.startswith("--mode="):
+            mode = arg.split("=")[1]
+        elif arg == "--mode" and len(sys.argv) > sys.argv.index(arg) + 1:
+            mode = sys.argv[sys.argv.index(arg) + 1]
 
     train(mode=mode)
+

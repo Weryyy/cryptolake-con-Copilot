@@ -70,3 +70,20 @@ class DQReport(BaseModel):
     total_expectations: int
     successful_expectations: int
     timestamp: float
+
+
+class FearGreedHistoryItem(BaseModel):
+    value: int
+    classification: str
+    timestamp: int
+    date_str: Optional[str] = None
+
+
+class PredictionAccuracy(BaseModel):
+    total_evaluated: int = 0
+    mae: float = 0.0
+    mape: float = 0.0
+    direction_accuracy: float = 0.0
+    correct_direction: int = 0
+    total_direction: int = 0
+    recent_errors: Optional[list] = None

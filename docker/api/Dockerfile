@@ -11,12 +11,16 @@ RUN pip install --no-cache-dir \
     requests>=2.31.0 \
     confluent-kafka==2.3.0 \
     websockets==12.0 \
-    pyiceberg[s3fs,pyarrow]>=0.7.0 \
+    "pyiceberg[s3fs,pyarrow]>=0.7.0" \
     prometheus-fastapi-instrumentator>=7.0.0 \
     redis \
     pandas \
-    torch --extra-index-url https://download.pytorch.org/whl/cpu \
-    redis>=5.0.0
+    redis>=5.0.0 \
+    scikit-learn>=1.4.0 \
+    joblib>=1.3.0
+
+RUN pip install --no-cache-dir \
+    torch --extra-index-url https://download.pytorch.org/whl/cpu
 
 COPY . .
 

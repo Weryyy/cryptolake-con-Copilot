@@ -2,7 +2,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter
-from src.serving.api.models.schemas import FearGreedResponse, MarketOverview, PredictionResponse, OHLCResponse, SystemAlert, DQReport
+from src.serving.api.models.schemas import FearGreedResponse, FearGreedHistoryItem, MarketOverview, PredictionResponse, OHLCResponse, SystemAlert, DQReport, PredictionAccuracy
 from src.serving.api.utils import get_redis_client, load_fresh_table, make_iso_filter
 import pyarrow.compute as pc
 
@@ -51,6 +51,20 @@ async def get_prediction():
             sentiment_bias="Neutral"
         )
     return PredictionResponse(**json.loads(data))
+
+
+@router.get("/analytics/prediction-accuracy", response_model=PredictionAccuracy)
+async def get_prediction_accuracy():
+    """Métricas de precisión del modelo de predicción ML.
+
+    Incluye: MAE, MAPE, precisión direccional, y últimos errores
+    para visualización en el dashboard.
+    """
+    redis = get_redis_client()
+    data = redis.get("prediction_accuracy")
+    if not data:
+        return PredictionAccuracy()
+    return PredictionAccuracy(**json.loads(data))
 
 
 @router.get("/analytics/market-overview", response_model=list[MarketOverview])
@@ -132,6 +146,43 @@ async def get_fear_greed():
     except Exception as e:
         print(f"Error FearGreed query: {e}")
         return FearGreedResponse(value=50, classification="Neutral", timestamp=0)
+
+
+@router.get("/analytics/fear-greed-history", response_model=list[FearGreedHistoryItem])
+async def get_fear_greed_history():
+    """Historial completo del Fear & Greed Index para gráfico de barras.
+
+    Devuelve todos los registros ordenados por timestamp ascendente.
+    """
+    try:
+        table = load_fresh_table("bronze.fear_greed_index")
+        rows = table.scan(
+            selected_fields=("value", "classification", "timestamp"),
+        ).to_arrow().to_pylist()
+        if not rows:
+            return []
+
+        rows.sort(key=lambda x: x["timestamp"])
+
+        from datetime import datetime as dt
+        # Deduplicate by date (keep latest value per day)
+        seen_dates = {}
+        for r in rows:
+            ts = int(r["timestamp"])
+            date_str = dt.utcfromtimestamp(ts).strftime(
+                "%Y-%m-%d") if ts > 0 else "N/A"
+            seen_dates[date_str] = FearGreedHistoryItem(
+                value=int(r["value"]),
+                classification=r["classification"],
+                timestamp=ts,
+                date_str=date_str,
+            )
+        # Return sorted by date
+        result = sorted(seen_dates.values(), key=lambda x: x.date_str or "")
+        return result
+    except Exception as e:
+        print(f"Error FearGreed history: {e}")
+        return []
 
 
 @router.get("/analytics/realtime-ohlc/{coin_id}", response_model=list[OHLCResponse])

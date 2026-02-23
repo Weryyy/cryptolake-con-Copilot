@@ -1,4 +1,4 @@
-.PHONY: help up down down-clean logs logs-kafka logs-spark status spark-shell kafka-topics kafka-create-topics kafka-describe test lint format dbt-run dbt-test quality-check seed pipeline
+.PHONY: help up down down-clean logs logs-kafka logs-spark status spark-shell kafka-topics kafka-create-topics kafka-describe test lint format dbt-run dbt-test quality-check seed pipeline init-iceberg init-namespaces bronze-load silver-transform gold-transform train-ml train-ml-legacy
 
 help: ## Mostrar esta ayuda
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -31,6 +31,10 @@ down-clean: ## Parar y BORRAR todos los datos
 	docker compose down -v
 	@echo "🗑️  Todos los volumes eliminados"
 
+rebuild: ## Rebuild y restart todos los servicios
+	docker compose down
+	docker compose up -d --build
+
 logs: ## Ver logs de todos los servicios
 	docker compose logs -f
 
@@ -39,6 +43,15 @@ logs-kafka: ## Ver logs solo de Kafka
 
 logs-spark: ## Ver logs solo de Spark
 	docker compose logs -f spark-master spark-worker
+
+logs-ml: ## Ver logs del servicio ML
+	docker compose logs -f ml-inference
+
+logs-api: ## Ver logs de la API
+	docker compose logs -f api
+
+logs-dashboard: ## Ver logs del dashboard
+	docker compose logs -f dashboard
 
 status: ## Ver estado de los servicios
 	docker compose ps
@@ -49,20 +62,6 @@ spark-shell: ## Abrir consola PySpark interactiva
 
 kafka-topics: ## Listar topics de Kafka
 	docker exec cryptolake-kafka kafka-topics --bootstrap-server localhost:9092 --list
-
-init-iceberg: ## Inicializar tablas Iceberg
-	docker exec -w /opt/spark/work cryptolake-spark-master python3 -m src.processing.batch.init_iceberg
-
-seed: ## Load seed data
-	python scripts/seed_data.py
-
-pipeline: ## Run full pipeline manually
-	@echo "🚀 Running full CryptoLake pipeline..."
-	docker exec -w /opt/spark/work cryptolake-spark-master python3 -m src.processing.batch.api_to_bronze
-	docker exec -w /opt/spark/work cryptolake-spark-master python3 -m src.processing.batch.bronze_to_silver
-	@echo "✅ Pipeline complete!"
-	docker exec cryptolake-kafka \
-	    kafka-topics --bootstrap-server localhost:29092 --list
 
 kafka-create-topics: ## Crear los topics necesarios
 	docker exec cryptolake-kafka \
@@ -77,6 +76,104 @@ kafka-describe: ## Describir el topic de precios
 	    kafka-topics --bootstrap-server localhost:29092 \
 	    --describe --topic prices.realtime
 
+# ==========================================================
+# PIPELINE COMMANDS
+# ==========================================================
+
+init-iceberg: ## Inicializar tablas y namespaces Iceberg
+	docker exec -w /opt/spark/work cryptolake-spark-master python3 -m src.processing.batch.init_iceberg
+
+bronze-load: ## Cargar datos desde APIs a Bronze
+	@echo "🟤 Loading data to Bronze..."
+	docker exec -w /opt/spark/work cryptolake-spark-master python3 -m src.processing.batch.api_to_bronze
+	@echo "✅ Bronze load complete"
+
+silver-transform: ## Transformar Bronze a Silver
+	@echo "⚪ Transforming Bronze to Silver..."
+	docker exec -w /opt/spark/work cryptolake-spark-master python3 -m src.processing.batch.bronze_to_silver
+	@echo "✅ Silver transform complete"
+
+gold-transform: ## Construir Star Schema en Gold (PySpark)
+	@echo "🟡 Building Gold Star Schema..."
+	docker exec -w /opt/spark/work cryptolake-spark-master \
+	    /opt/spark/bin/spark-submit /opt/spark/work/src/processing/batch/silver_to_gold.py
+	@echo "✅ Gold transform complete"
+
+pipeline: ## Run full pipeline: init → bronze → silver → gold → dbt → quality
+	@echo "🚀 Running full CryptoLake pipeline..."
+	@echo ""
+	@echo "Step 1/6: Init Iceberg namespaces"
+	$(MAKE) init-iceberg
+	@echo ""
+	@echo "Step 2/6: Bronze load"
+	$(MAKE) bronze-load
+	@echo ""
+	@echo "Step 3/6: Silver transform"
+	$(MAKE) silver-transform
+	@echo ""
+	@echo "Step 4/6: Gold Star Schema (PySpark)"
+	$(MAKE) gold-transform
+	@echo ""
+	@echo "Step 5/6: dbt run + test"
+	$(MAKE) dbt-run
+	$(MAKE) dbt-test || true
+	@echo ""
+	@echo "Step 6/6: Quality checks"
+	$(MAKE) quality-check || true
+	@echo ""
+	@echo "✅ Full pipeline complete!"
+
+# ==========================================================
+# DBT
+# ==========================================================
+
+dbt-run: ## Run dbt transformations
+	cd src/transformation/dbt_cryptolake && dbt run
+
+dbt-test: ## Run dbt tests
+	cd src/transformation/dbt_cryptolake && dbt test
+
+# ==========================================================
+# QUALITY
+# ==========================================================
+
+quality-check: ## Run data quality checks (Bronze + Silver + Gold)
+	@echo "🔍 Running quality checks..."
+	docker exec -w /opt/spark/work cryptolake-spark-master \
+	    /opt/spark/bin/spark-submit /opt/spark/work/src/quality/run_quality_checks.py --layer=all
+	@echo "✅ Quality checks complete"
+
+quality-bronze: ## Run only Bronze quality checks
+	docker exec -w /opt/spark/work cryptolake-spark-master \
+	    /opt/spark/bin/spark-submit /opt/spark/work/src/quality/run_quality_checks.py --layer=bronze
+
+quality-silver: ## Run only Silver quality checks
+	docker exec -w /opt/spark/work cryptolake-spark-master \
+	    /opt/spark/bin/spark-submit /opt/spark/work/src/quality/run_quality_checks.py --layer=silver
+
+quality-gold: ## Run only Gold quality checks
+	docker exec -w /opt/spark/work cryptolake-spark-master \
+	    /opt/spark/bin/spark-submit /opt/spark/work/src/quality/run_quality_checks.py --layer=gold
+
+# ==========================================================
+# ML
+# ==========================================================
+
+train-ml: ## Train ML ensemble (GradientBoosting + RandomForest + LSTM)
+	@echo "🧠 Training ML ensemble v2..."
+	docker exec -w /app cryptolake-ml python -m src.ml.train --mode=ensemble
+	@echo "✅ ML ensemble training complete"
+
+train-ml-legacy: ## Train legacy TFT models (historical + recent)
+	@echo "🧠 Training legacy TFT models..."
+	docker exec -w /app cryptolake-ml python -m src.ml.train --mode=historical
+	docker exec -w /app cryptolake-ml python -m src.ml.train --mode=recent
+	@echo "✅ Legacy ML training complete"
+
+# ==========================================================
+# DEVELOPMENT
+# ==========================================================
+
 test: ## Run all tests
 	pytest tests/ -v --cov=src
 
@@ -87,20 +184,5 @@ lint: ## Run linting
 format: ## Format code
 	ruff format src/ tests/
 
-dbt-run: ## Run dbt transformations
-	cd src/transformation/dbt_cryptolake && dbt run
-
-dbt-test: ## Run dbt tests
-	cd src/transformation/dbt_cryptolake && dbt test
-
-quality-check: ## Run Great Expectations validation
-	python -m src.quality.run_checkpoint
-
 seed: ## Load seed data
 	python scripts/seed_data.py
-
-pipeline: ## Run full pipeline manually
-	@echo "🚀 Running full CryptoLake pipeline..."
-	docker exec -w /opt/spark/work cryptolake-spark-master python3 -m src.processing.batch.api_to_bronze
-	docker exec -w /opt/spark/work cryptolake-spark-master python3 -m src.processing.batch.bronze_to_silver
-	@echo "✅ Pipeline complete!"
