@@ -8,6 +8,7 @@ transforma los mensajes al formato CryptoLake, y los publica en Kafka.
 Para ejecutar:
     python -m src.ingestion.streaming.binance_producer
 """
+
 import asyncio
 import json
 import signal

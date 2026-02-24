@@ -1,4 +1,5 @@
 """Pydantic response models for the API."""
+
 from datetime import date
 
 from pydantic import BaseModel
@@ -51,6 +52,7 @@ class PredictionResponse(BaseModel):
 
 class DualPredictionResponse(BaseModel):
     """Respuesta con predicciones de ambos modelos para comparacion."""
+
     legacy: PredictionResponse | None = None
     ensemble: PredictionResponse | None = None
     primary_model: str = "legacy"
@@ -58,6 +60,7 @@ class DualPredictionResponse(BaseModel):
 
 class ModelAccuracyComparison(BaseModel):
     """Precision de ambos modelos para comparacion lado a lado."""
+
     legacy: dict | None = None
     ensemble: dict | None = None
 

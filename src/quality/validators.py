@@ -48,9 +48,7 @@ class CheckResult:
     metric_value: float | None = None
     threshold: float | None = None
     message: str = ""
-    checked_at: str = field(
-        default_factory=lambda: datetime.now(UTC).isoformat()
-    )
+    checked_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     def to_dict(self) -> dict:
         return {
@@ -101,21 +99,11 @@ class BaseValidator:
 
     def _nulls(self, table: str, col: str) -> int:
         return (
-            self.spark.sql(
-                f"SELECT COUNT(*) AS cnt FROM {table} WHERE {col} IS NULL"
-            )
-            .first()
-            .cnt
+            self.spark.sql(f"SELECT COUNT(*) AS cnt FROM {table} WHERE {col} IS NULL").first().cnt
         )
 
     def _distinct(self, table: str, col: str) -> int:
-        return (
-            self.spark.sql(
-                f"SELECT COUNT(DISTINCT {col}) AS cnt FROM {table}"
-            )
-            .first()
-            .cnt
-        )
+        return self.spark.sql(f"SELECT COUNT(DISTINCT {col}) AS cnt FROM {table}").first().cnt
 
     def get_summary(self) -> dict:
         total = len(self.results)
@@ -125,12 +113,8 @@ class BaseValidator:
             "total": total,
             "passed": passed,
             "failed": failed,
-            "warnings": sum(
-                1 for r in self.results if r.status == CheckStatus.WARNING
-            ),
-            "errors": sum(
-                1 for r in self.results if r.status == CheckStatus.ERROR
-            ),
+            "warnings": sum(1 for r in self.results if r.status == CheckStatus.WARNING),
+            "errors": sum(1 for r in self.results if r.status == CheckStatus.ERROR),
             "pass_rate": round(passed / total * 100, 1) if total > 0 else 0,
         }
 
@@ -327,11 +311,7 @@ class SilverValidator(BaseValidator):
 
         # Positive prices
         neg = (
-            self.spark.sql(
-                f"SELECT COUNT(*) AS cnt FROM {table} WHERE price_usd <= 0"
-            )
-            .first()
-            .cnt
+            self.spark.sql(f"SELECT COUNT(*) AS cnt FROM {table} WHERE price_usd <= 0").first().cnt
         )
         self._add(
             CheckResult(
@@ -362,9 +342,7 @@ class SilverValidator(BaseValidator):
 
         # No future dates
         future = (
-            self.spark.sql(
-                f"SELECT COUNT(*) AS cnt FROM {table} WHERE price_date > CURRENT_DATE()"
-            )
+            self.spark.sql(f"SELECT COUNT(*) AS cnt FROM {table} WHERE price_date > CURRENT_DATE()")
             .first()
             .cnt
         )
@@ -467,9 +445,7 @@ class SilverValidator(BaseValidator):
 
         # Positive OHLC prices
         neg = (
-            self.spark.sql(
-                f"SELECT COUNT(*) AS cnt FROM {table} WHERE close <= 0 OR open <= 0"
-            )
+            self.spark.sql(f"SELECT COUNT(*) AS cnt FROM {table} WHERE close <= 0 OR open <= 0")
             .first()
             .cnt
         )

@@ -1,4 +1,5 @@
 """Health check endpoint."""
+
 from datetime import UTC
 
 from fastapi import APIRouter
@@ -41,9 +42,7 @@ async def latency_check():
         table = load_fresh_table("bronze.realtime_prices")
         snapshot = table.current_snapshot()
         if snapshot:
-            committed_at = datetime.fromtimestamp(
-                snapshot.timestamp_ms / 1000, tz=UTC
-            )
+            committed_at = datetime.fromtimestamp(snapshot.timestamp_ms / 1000, tz=UTC)
             lag_seconds = (now_utc - committed_at).total_seconds()
             result["layers"]["bronze"] = {
                 "latest_commit": committed_at.isoformat(),
@@ -64,9 +63,7 @@ async def latency_check():
         table = load_fresh_table("silver.realtime_vwap")
         snapshot = table.current_snapshot()
         if snapshot:
-            committed_at = datetime.fromtimestamp(
-                snapshot.timestamp_ms / 1000, tz=UTC
-            )
+            committed_at = datetime.fromtimestamp(snapshot.timestamp_ms / 1000, tz=UTC)
             lag_seconds = (now_utc - committed_at).total_seconds()
             result["layers"]["silver"] = {
                 "latest_commit": committed_at.isoformat(),

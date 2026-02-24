@@ -8,6 +8,7 @@ Arquitectura:
 
 Hardware objetivo: Xeon E5-1620 v3 (4C/8T), 32GB RAM, CPU-only.
 """
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -15,6 +16,7 @@ import torch.nn as nn
 # ──────────────────────────────────────────────────────────────
 # Indicadores técnicos
 # ──────────────────────────────────────────────────────────────
+
 
 def compute_rsi(prices, period=14):
     """Calcula RSI (Relative Strength Index) sobre un array de precios.
@@ -51,7 +53,7 @@ def compute_sma(prices, period):
     prices = np.asarray(prices, dtype=np.float64)
     sma = np.full(len(prices), np.nan)
     for i in range(period - 1, len(prices)):
-        sma[i] = prices[i - period + 1: i + 1].mean()
+        sma[i] = prices[i - period + 1 : i + 1].mean()
     # Rellenar NaN iniciales
     first_valid = period - 1
     if first_valid < len(sma) and not np.isnan(sma[first_valid]):
@@ -62,6 +64,7 @@ def compute_sma(prices, period):
 # ──────────────────────────────────────────────────────────────
 # Council of Agents — ahora con indicadores REALES
 # ──────────────────────────────────────────────────────────────
+
 
 class CouncilOfAgents:
     """Calcula señales cuantitativas basadas en indicadores técnicos reales."""
@@ -131,6 +134,7 @@ class CouncilOfAgents:
 # Modelo — optimizado para CPU (Xeon E5-1620 v3)
 # ──────────────────────────────────────────────────────────────
 
+
 class TemporalFusionTransformer(nn.Module):
     """
     TFT simplificado para predicción de precios.
@@ -145,8 +149,7 @@ class TemporalFusionTransformer(nn.Module):
     def __init__(self, input_dim=4, agent_dim=2):
         super().__init__()
         self.lstm_long = nn.LSTM(input_dim, 48, batch_first=True, num_layers=1)
-        self.lstm_short = nn.LSTM(
-            input_dim, 24, batch_first=True, num_layers=1)
+        self.lstm_short = nn.LSTM(input_dim, 24, batch_first=True, num_layers=1)
         self.fc_agents = nn.Linear(agent_dim, 12)
         self.dropout = nn.Dropout(0.1)
 
@@ -171,6 +174,7 @@ class TemporalFusionTransformer(nn.Module):
 # ReturnLSTM — modelo mejorado para predicción de retornos
 # ──────────────────────────────────────────────────────────────
 
+
 class ReturnLSTM(nn.Module):
     """LSTM con Attention para predecir retornos (cambio porcentual).
 
@@ -189,7 +193,9 @@ class ReturnLSTM(nn.Module):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.lstm = nn.LSTM(
-            input_dim, hidden_dim, num_layers=num_layers,
+            input_dim,
+            hidden_dim,
+            num_layers=num_layers,
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0,
         )

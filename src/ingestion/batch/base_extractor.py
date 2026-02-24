@@ -5,6 +5,7 @@ Patrón Template Method:
     run() define el flujo: extract → validate → enrich
     Cada subclase implementa extract() y opcionalmente validate().
 """
+
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from typing import Any
@@ -31,10 +32,12 @@ class BaseExtractor(ABC):
     def __init__(self, source_name: str):
         self.source_name = source_name
         self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "CryptoLake/1.0 (Educational Project)",
-            "Accept": "application/json",
-        })
+        self.session.headers.update(
+            {
+                "User-Agent": "CryptoLake/1.0 (Educational Project)",
+                "Accept": "application/json",
+            }
+        )
 
     def run(self) -> list[dict[str, Any]]:
         """Ejecuta el pipeline completo: extract → validate → enrich."""
@@ -42,8 +45,7 @@ class BaseExtractor(ABC):
         start_time = datetime.now(UTC)
 
         raw_data = self.extract()
-        logger.info("extraction_raw", source=self.source_name,
-                    raw_count=len(raw_data))
+        logger.info("extraction_raw", source=self.source_name, raw_count=len(raw_data))
 
         validated_data = self.validate(raw_data)
         logger.info(

@@ -1,4 +1,5 @@
 """Test completo de acceso a Iceberg desde la API."""
+
 from datetime import UTC, datetime, timedelta
 
 import pyarrow.compute as pc
@@ -91,6 +92,7 @@ except Exception as e:
 print("\n[8] Test refresh vs no-refresh:")
 try:
     import time
+
     t1 = cat.load_table("silver.realtime_vwap")
     snap1 = t1.current_snapshot().snapshot_id
     time.sleep(2)

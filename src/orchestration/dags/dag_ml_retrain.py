@@ -12,6 +12,7 @@ inferencia si el entrenamiento fue exitoso.
 
 Schedule: Cada 6 horas (0 */6 * * *)
 """
+
 import json
 import os
 import sys
@@ -36,6 +37,7 @@ def _alert_to_redis(context):
     print(msg)
     try:
         import redis
+
         r = redis.Redis(
             host=os.getenv("REDIS_HOST", "redis"),
             port=int(os.getenv("REDIS_PORT", 6379)),
@@ -133,9 +135,7 @@ def wait_for_completion(mode: str = "ensemble", **kwargs):
 
         time.sleep(30)
 
-    raise Exception(
-        f"Timeout: entrenamiento no termino en {MAX_WAIT_SECONDS}s"
-    )
+    raise Exception(f"Timeout: entrenamiento no termino en {MAX_WAIT_SECONDS}s")
 
 
 def log_retrain_result(mode: str = "ensemble", **kwargs):
@@ -158,9 +158,8 @@ def log_retrain_result(mode: str = "ensemble", **kwargs):
     # Leer metricas del ultimo entrenamiento desde Redis
     try:
         import requests
-        resp = requests.get(
-            f"{API_URL}/api/v1/ml/retrain-status", timeout=15
-        )
+
+        resp = requests.get(f"{API_URL}/api/v1/ml/retrain-status", timeout=15)
         status = resp.json()
         entry["retrain_details"] = status
     except Exception:
@@ -187,10 +186,7 @@ default_args = {
 with DAG(
     dag_id="cryptolake_ml_retrain",
     default_args=default_args,
-    description=(
-        "Reentrenamiento periodico de modelos ML "
-        "(Ensemble cada 6h, Legacy diario)"
-    ),
+    description=("Reentrenamiento periodico de modelos ML (Ensemble cada 6h, Legacy diario)"),
     schedule="0 */6 * * *",
     start_date=datetime(2025, 1, 1),
     catchup=False,
@@ -198,10 +194,8 @@ with DAG(
     tags=["cryptolake", "ml", "retraining"],
     doc_md=__doc__,
 ) as dag:
-
     # ── Ensemble Retrain ──────────────────────────────────────
     with TaskGroup("ensemble_retrain") as ensemble_group:
-
         trigger_ensemble = PythonOperator(
             task_id="trigger_ensemble_retrain",
             python_callable=trigger_retrain,

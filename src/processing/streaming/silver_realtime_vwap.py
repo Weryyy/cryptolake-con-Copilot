@@ -3,6 +3,7 @@ Spark Structured Streaming: Bronze Realtime → Silver Aggregates (VWAP + Anomal
 
 Calcula VWAP y Z-Score sobre una ventana de 1 minuto para detectar anomalías.
 """
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import abs as abs_
 from pyspark.sql.functions import avg, col, first, last, stddev, when, window
@@ -15,9 +16,11 @@ from src.config.settings import settings
 
 def create_spark_session():
     return (
-        SparkSession.builder
-        .appName("CryptoLake-SilverRealtimeVWAP")
-        .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+        SparkSession.builder.appName("CryptoLake-SilverRealtimeVWAP")
+        .config(
+            "spark.sql.extensions",
+            "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+        )
         .config("spark.sql.catalog.cryptolake", "org.apache.iceberg.spark.SparkCatalog")
         .config("spark.sql.catalog.cryptolake.type", "rest")
         .config("spark.sql.catalog.cryptolake.uri", settings.iceberg_catalog_uri)
@@ -42,23 +45,15 @@ def run_vwap_job():
 
     # 1. Leer de la tabla Bronze Realtime (Streaming Source)
     # Iceberg soporta lectura incremental
-    stream_df = (
-        spark.readStream
-        .format("iceberg")
-        .load("bronze.realtime_prices")
-    )
+    stream_df = spark.readStream.format("iceberg").load("bronze.realtime_prices")
 
     # 2. Agregar por ventana de 30 segundos
     # Calculamos VWAP = Sum(Price * Volume) / Sum(Volume)
     aggregated_df = (
-        stream_df
-        .withColumn("timestamp", (col("trade_time_ms")/1000).cast("timestamp"))
+        stream_df.withColumn("timestamp", (col("trade_time_ms") / 1000).cast("timestamp"))
         .withColumn("notional", col("price_usd") * col("quantity"))
         .withWatermark("timestamp", "1 minute")
-        .groupBy(
-            col("coin_id"),
-            window(col("timestamp"), "30 seconds")
-        )
+        .groupBy(col("coin_id"), window(col("timestamp"), "30 seconds"))
         .agg(
             (sum_("notional") / sum_("quantity")).alias("vwap"),
             sum_("quantity").alias("total_volume"),
@@ -67,7 +62,7 @@ def run_vwap_job():
             first("price_usd").alias("open"),
             max_("price_usd").alias("high"),
             min_("price_usd").alias("low"),
-            last("price_usd").alias("close")
+            last("price_usd").alias("close"),
         )
     )
 
@@ -75,8 +70,7 @@ def run_vwap_job():
     # Z-Score = (Price - Avg) / StdDev
     # Consideramos anomalía si abs(Z) > 3
     enriched_df = (
-        aggregated_df
-        .withColumn("z_score", (col("vwap") - col("avg_price")) / col("stddev_price"))
+        aggregated_df.withColumn("z_score", (col("vwap") - col("avg_price")) / col("stddev_price"))
         .withColumn("is_anomaly", when(abs_(col("z_score")) > 3, 1).otherwise(0))
         .select(
             "coin_id",
@@ -91,7 +85,7 @@ def run_vwap_job():
             "low",
             "close",
             "z_score",
-            "is_anomaly"
+            "is_anomaly",
         )
     )
 
@@ -115,8 +109,7 @@ def run_vwap_job():
     """)
 
     query = (
-        enriched_df.writeStream
-        .format("iceberg")
+        enriched_df.writeStream.format("iceberg")
         .outputMode("append")
         .option("path", "silver.realtime_vwap")
         .option("checkpointLocation", "s3a://cryptolake-checkpoints/silver_vwap")

@@ -18,6 +18,7 @@ Features:
 
 Hardware objetivo: Xeon E5-1620 v3, 32GB RAM, CPU-only.
 """
+
 import numpy as np
 import pandas as pd
 
@@ -28,15 +29,26 @@ from src.ml.models import compute_rsi
 # ──────────────────────────────────────────────────────────────
 
 FEATURE_NAMES = [
-    "return_1", "return_3", "return_5", "return_10",
-    "volatility_5", "volatility_10", "volatility_20",
-    "rsi_7", "rsi_14",
-    "macd", "macd_signal", "macd_hist",
+    "return_1",
+    "return_3",
+    "return_5",
+    "return_10",
+    "volatility_5",
+    "volatility_10",
+    "volatility_20",
+    "rsi_7",
+    "rsi_14",
+    "macd",
+    "macd_signal",
+    "macd_hist",
     "bb_position",
-    "volume_ratio_5", "volume_ratio_10",
-    "momentum_5", "momentum_10",
+    "volume_ratio_5",
+    "volume_ratio_10",
+    "momentum_5",
+    "momentum_10",
     "fear_greed_norm",
-    "hour_sin", "hour_cos",
+    "hour_sin",
+    "hour_cos",
 ]
 
 N_FEATURES = len(FEATURE_NAMES)  # 20
@@ -45,6 +57,7 @@ N_FEATURES = len(FEATURE_NAMES)  # 20
 # ──────────────────────────────────────────────────────────────
 # Indicadores individuales
 # ──────────────────────────────────────────────────────────────
+
 
 def compute_returns(prices, lag=1):
     """Retornos porcentuales con lag dado, clipped a [-0.5, 0.5]."""
@@ -60,7 +73,7 @@ def compute_volatility(prices, window=5):
     ret = compute_returns(prices, 1)
     vol = np.zeros_like(prices)
     for i in range(window, len(prices)):
-        vol[i] = ret[i - window + 1: i + 1].std()
+        vol[i] = ret[i - window + 1 : i + 1].std()
     if window < len(vol) and vol[window] > 0:
         vol[:window] = vol[window]
     return vol
@@ -99,7 +112,7 @@ def compute_bollinger_position(prices, window=20, num_std=2):
     prices = np.asarray(prices, dtype=np.float64)
     position = np.full_like(prices, 0.5)
     for i in range(window, len(prices)):
-        window_data = prices[i - window + 1: i + 1]
+        window_data = prices[i - window + 1 : i + 1]
         middle = window_data.mean()
         std = window_data.std()
         if std > 0:
@@ -117,7 +130,7 @@ def compute_volume_ratio(volumes, window=5):
     volumes = np.asarray(volumes, dtype=np.float64)
     ratio = np.ones_like(volumes)
     for i in range(window, len(volumes)):
-        avg = volumes[i - window: i].mean()
+        avg = volumes[i - window : i].mean()
         if avg > 0:
             ratio[i] = volumes[i] / avg
     if window < len(ratio):
@@ -130,9 +143,7 @@ def compute_momentum(prices, period=5):
     prices = np.asarray(prices, dtype=np.float64)
     mom = np.zeros_like(prices)
     if period < len(prices):
-        mom[period:] = (prices[period:] - prices[:-period]) / (
-            prices[:-period] + 1e-10
-        )
+        mom[period:] = (prices[period:] - prices[:-period]) / (prices[:-period] + 1e-10)
         mom[:period] = mom[period]
     return np.clip(mom, -0.5, 0.5)
 
@@ -140,6 +151,7 @@ def compute_momentum(prices, period=5):
 # ──────────────────────────────────────────────────────────────
 # Constructor de matriz de features completa
 # ──────────────────────────────────────────────────────────────
+
 
 def build_feature_matrix(prices, volumes, timestamps=None, fear_greed=50):
     """Construye la matriz completa de 20 features.
@@ -166,12 +178,9 @@ def build_feature_matrix(prices, volumes, timestamps=None, fear_greed=50):
     features["return_10"] = compute_returns(prices, min(10, max(1, n - 1)))
 
     # 5-7: Volatilidad multi-ventana
-    features["volatility_5"] = compute_volatility(
-        prices, min(5, max(2, n - 1)))
-    features["volatility_10"] = compute_volatility(
-        prices, min(10, max(2, n - 1)))
-    features["volatility_20"] = compute_volatility(
-        prices, min(20, max(2, n - 1)))
+    features["volatility_5"] = compute_volatility(prices, min(5, max(2, n - 1)))
+    features["volatility_10"] = compute_volatility(prices, min(10, max(2, n - 1)))
+    features["volatility_20"] = compute_volatility(prices, min(20, max(2, n - 1)))
 
     # 8-9: RSI a dos periodos
     rsi_7 = compute_rsi(prices, min(7, max(3, n // 4)))
@@ -193,29 +202,22 @@ def build_feature_matrix(prices, volumes, timestamps=None, fear_greed=50):
     features["bb_position"] = compute_bollinger_position(prices, bb_window)
 
     # 14-15: Ratios de volumen
-    features["volume_ratio_5"] = compute_volume_ratio(
-        volumes, min(5, max(2, n - 1))
-    )
-    features["volume_ratio_10"] = compute_volume_ratio(
-        volumes, min(10, max(2, n - 1))
-    )
+    features["volume_ratio_5"] = compute_volume_ratio(volumes, min(5, max(2, n - 1)))
+    features["volume_ratio_10"] = compute_volume_ratio(volumes, min(10, max(2, n - 1)))
 
     # 16-17: Momentum
     features["momentum_5"] = compute_momentum(prices, min(5, max(1, n - 1)))
     features["momentum_10"] = compute_momentum(prices, min(10, max(1, n - 1)))
 
     # 18: Fear & Greed normalizado
-    features["fear_greed_norm"] = np.full(
-        n, np.clip((fear_greed - 50) / 50.0, -1.0, 1.0)
-    )
+    features["fear_greed_norm"] = np.full(n, np.clip((fear_greed - 50) / 50.0, -1.0, 1.0))
 
     # 19-20: Hora del día (codificación cíclica)
     if timestamps is not None:
         try:
-            hours = np.array([
-                pd.Timestamp(t).hour + pd.Timestamp(t).minute / 60.0
-                for t in timestamps
-            ])
+            hours = np.array(
+                [pd.Timestamp(t).hour + pd.Timestamp(t).minute / 60.0 for t in timestamps]
+            )
         except Exception:
             hours = np.zeros(n)
     else:
@@ -233,8 +235,13 @@ def build_feature_matrix(prices, volumes, timestamps=None, fear_greed=50):
 # Constructores de muestras para entrenamiento
 # ──────────────────────────────────────────────────────────────
 
+
 def build_training_samples(
-    prices, volumes, timestamps=None, fear_greed=50, lookback=30,
+    prices,
+    volumes,
+    timestamps=None,
+    fear_greed=50,
+    lookback=30,
     target_horizon=3,
 ):
     """Construye muestras (X, y_direction, y_return) para modelos tabulares.
@@ -270,18 +277,22 @@ def build_training_samples(
 
     X = features[start:end]  # [N_samples, 20]
 
-    y_return = (
-        prices[start + target_horizon: end + target_horizon]
-        - prices[start: end]
-    ) / (prices[start: end] + 1e-10)
+    y_return = (prices[start + target_horizon : end + target_horizon] - prices[start:end]) / (
+        prices[start:end] + 1e-10
+    )
     y_direction = (y_return > 0).astype(np.float32)
 
     return X, y_direction, y_return.astype(np.float32)
 
 
 def build_sequence_samples(
-    prices, volumes, timestamps=None, fear_greed=50,
-    lookback=30, seq_len=10, target_horizon=3,
+    prices,
+    volumes,
+    timestamps=None,
+    fear_greed=50,
+    lookback=30,
+    seq_len=10,
+    target_horizon=3,
 ):
     """Construye muestras secuenciales para LSTM.
 
@@ -308,7 +319,7 @@ def build_sequence_samples(
     y_rets = []
 
     for t in range(start, end):
-        seq = features[t - seq_len: t]  # [seq_len, 20]
+        seq = features[t - seq_len : t]  # [seq_len, 20]
         X_seqs.append(seq)
         ret = (prices[t + target_horizon] - prices[t]) / (prices[t] + 1e-10)
         y_rets.append(ret)

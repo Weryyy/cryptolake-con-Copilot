@@ -7,6 +7,7 @@ Endpoints:
 - GET /api/v1/analytics/fear-greed — Fear & Greed actual
 - GET /api/v1/health — Health check
 """
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI

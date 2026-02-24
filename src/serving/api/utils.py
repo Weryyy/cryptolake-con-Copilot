@@ -31,7 +31,7 @@ def get_iceberg_catalog():
                 "s3.secret-access-key": os.getenv("AWS_SECRET_ACCESS_KEY", "cryptolake123"),
                 "s3.region": os.getenv("AWS_REGION", "us-east-1"),
                 "s3.path-style-access": "true",
-            }
+            },
         )
     return _catalog
 
@@ -77,15 +77,25 @@ def get_redis_client():
         print("⚠️ redis-py no instalado, simulando cliente...")
 
         class MockRedis:
-            def get(self, *args): return None
-            def set(self, *args, **kwargs): pass
-            def lpush(self, *args): pass
-            def lrange(self, *args): return []
-            def keys(self, *args): return []
+            def get(self, *args):
+                return None
+
+            def set(self, *args, **kwargs):
+                pass
+
+            def lpush(self, *args):
+                pass
+
+            def lrange(self, *args):
+                return []
+
+            def keys(self, *args):
+                return []
+
         return MockRedis()
     return redis.Redis(
         host=os.getenv("REDIS_HOST", "localhost"),
         port=int(os.getenv("REDIS_PORT", 6379)),
         db=0,
-        decode_responses=True
+        decode_responses=True,
     )

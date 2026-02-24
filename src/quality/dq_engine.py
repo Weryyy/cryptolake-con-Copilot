@@ -39,8 +39,7 @@ def validate_table(table_name, suite_name):
             # En producción usaríamos el RuntimeBatchRequest con Spark
 
         # 3. Ejecutar validación (Compatibilidad con GX 1.x)
-        datasource = context.data_sources.add_pandas(
-            name=f"ds_{int(time.time())}")
+        datasource = context.data_sources.add_pandas(name=f"ds_{int(time.time())}")
         asset = datasource.add_dataframe_asset(name="manual_asset")
 
         # En GX 1.x necesitamos definir un batch
@@ -57,11 +56,13 @@ def validate_table(table_name, suite_name):
                 # Ejecutar via Validator de GX (más robusto que manual)
                 method = getattr(validator, exp_type)
                 val_res = method(**kwargs)
-                results.append({
-                    "expectation": exp_type,
-                    "column": kwargs.get("column", "N/A"),
-                    "success": val_res.success
-                })
+                results.append(
+                    {
+                        "expectation": exp_type,
+                        "column": kwargs.get("column", "N/A"),
+                        "success": val_res.success,
+                    }
+                )
             except Exception as e:
                 print(f"⚠️ Error ejecutando expectativa {exp_type}: {e}")
 
@@ -76,12 +77,11 @@ def validate_table(table_name, suite_name):
             "timestamp": time.time(),
             "results": results,
             "success_rate": success_rate,
-            "status": "PASS" if success_rate > 0.8 else "FAIL"
+            "status": "PASS" if success_rate > 0.8 else "FAIL",
         }
 
         redis.set(f"dq_report:{table_name}", json.dumps(dq_report))
-        print(
-            f"✅ Validación completada: {dq_report['status']} ({success_rate*100:.1f}%)")
+        print(f"✅ Validación completada: {dq_report['status']} ({success_rate * 100:.1f}%)")
         return dq_report["status"] == "PASS"
 
     except Exception as e:
@@ -91,6 +91,7 @@ def validate_table(table_name, suite_name):
 
 if __name__ == "__main__":
     import sys
+
     tbl = sys.argv[1] if len(sys.argv) > 1 else "silver.daily_prices"
     suite = sys.argv[2] if len(sys.argv) > 2 else "silver_prices_suite"
     validate_table(tbl, suite)

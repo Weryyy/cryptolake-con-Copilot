@@ -13,6 +13,7 @@ Publica en Redis por separado para comparacion en dashboard:
 
 Optimizado para CPU (Xeon E5-1620 v3).
 """
+
 import json
 import os
 import time
@@ -32,6 +33,7 @@ from src.serving.api.utils import get_iceberg_catalog, get_redis_client
 # ----------------------------------------------------------------------
 # Carga de modelos
 # ----------------------------------------------------------------------
+
 
 def load_ensemble_models(device):
     """Carga los 3 modelos del ensemble + configuracion.
@@ -77,15 +79,15 @@ def load_ensemble_models(device):
         for hidden_dim in [64, 128]:
             try:
                 lstm = ReturnLSTM(
-                    input_dim=N_FEATURES, hidden_dim=hidden_dim,
-                    num_layers=2, dropout=0.2,
+                    input_dim=N_FEATURES,
+                    hidden_dim=hidden_dim,
+                    num_layers=2,
+                    dropout=0.2,
                 ).to(device)
-                lstm.load_state_dict(
-                    torch.load(lstm_path, map_location=device))
+                lstm.load_state_dict(torch.load(lstm_path, map_location=device))
                 lstm.eval()
                 models["lstm"] = lstm
-                print(
-                    f"[OK] ReturnLSTM cargado (hidden={hidden_dim}): {lstm_path}")
+                print(f"[OK] ReturnLSTM cargado (hidden={hidden_dim}): {lstm_path}")
                 loaded = True
                 break
             except RuntimeError:
@@ -109,6 +111,7 @@ def load_ensemble_models(device):
 # Fallback: cargar modelos legacy TFT si ensemble no existe
 # ----------------------------------------------------------------------
 
+
 def load_legacy_models(device):
     """Carga modelos TFT legacy como fallback."""
     from src.ml.models import TemporalFusionTransformer
@@ -117,8 +120,7 @@ def load_legacy_models(device):
     for mode in ["historical", "recent"]:
         path = f"models/tft_{mode}.pth"
         if os.path.exists(path):
-            model = TemporalFusionTransformer(
-                input_dim=4, agent_dim=2).to(device)
+            model = TemporalFusionTransformer(input_dim=4, agent_dim=2).to(device)
             model.load_state_dict(torch.load(path, map_location=device))
             model.eval()
             models[mode] = model
@@ -132,6 +134,7 @@ def load_legacy_models(device):
 # Obtencion de datos
 # ----------------------------------------------------------------------
 
+
 def get_btc_data(catalog, n_points=60):
     """Obtiene ultimos N puntos de BTC desde Iceberg.
 
@@ -142,15 +145,18 @@ def get_btc_data(catalog, n_points=60):
     table.refresh()
 
     from datetime import datetime, timedelta
-    since = datetime.now(UTC) - timedelta(hours=6)
-    row_filter = (
-        f"coin_id == 'bitcoin' AND window_start >= '{since.isoformat()}'"
-    )
 
-    df = table.scan(
-        row_filter=row_filter,
-        selected_fields=("window_start", "close", "total_volume"),
-    ).to_arrow().to_pylist()
+    since = datetime.now(UTC) - timedelta(hours=6)
+    row_filter = f"coin_id == 'bitcoin' AND window_start >= '{since.isoformat()}'"
+
+    df = (
+        table.scan(
+            row_filter=row_filter,
+            selected_fields=("window_start", "close", "total_volume"),
+        )
+        .to_arrow()
+        .to_pylist()
+    )
 
     return sorted(df, key=lambda x: str(x["window_start"]))
 
@@ -159,13 +165,15 @@ def get_fear_greed(catalog):
     """Obtiene ultimo Fear & Greed value."""
     try:
         table = catalog.load_table("bronze.fear_greed_index")
-        rows = table.scan(
-            selected_fields=("value", "timestamp"),
-        ).to_arrow().to_pylist()
+        rows = (
+            table.scan(
+                selected_fields=("value", "timestamp"),
+            )
+            .to_arrow()
+            .to_pylist()
+        )
         if rows:
-            latest = sorted(
-                rows, key=lambda x: x["timestamp"], reverse=True
-            )[0]
+            latest = sorted(rows, key=lambda x: x["timestamp"], reverse=True)[0]
             return int(latest["value"])
     except Exception:
         pass
@@ -175,6 +183,7 @@ def get_fear_greed(catalog):
 # ----------------------------------------------------------------------
 # Inferencia ensemble (punto unico)
 # ----------------------------------------------------------------------
+
 
 def ensemble_predict(models, features_matrix, device, prices_array=None):
     """Genera prediccion del ensemble (punto unico).
@@ -213,7 +222,7 @@ def ensemble_predict(models, features_matrix, device, prices_array=None):
 
     # RSI para detectar sobrecompra/sobreventa -> mean reversion
     rsi_val = features_matrix[-1, 7] * 100  # rsi_7 (col 7), denormalize
-    bb_pos = features_matrix[-1, 12]         # bollinger position (col 12)
+    bb_pos = features_matrix[-1, 12]  # bollinger position (col 12)
 
     # Mean-reversion signal: si RSI extremo o BB extremo, ir contra la tendencia
     mean_reversion = 0.0
@@ -248,9 +257,11 @@ def ensemble_predict(models, features_matrix, device, prices_array=None):
         try:
             seq_len = config.get("seq_len", 10)
             if len(features_matrix) >= seq_len:
-                x_seq = torch.tensor(
-                    features_matrix[-seq_len:], dtype=torch.float32
-                ).unsqueeze(0).to(device)
+                x_seq = (
+                    torch.tensor(features_matrix[-seq_len:], dtype=torch.float32)
+                    .unsqueeze(0)
+                    .to(device)
+                )
                 with torch.no_grad():
                     ret_pred, dir_pred = models["lstm"](x_seq)
                     lstm_prob = dir_pred.item()
@@ -337,6 +348,7 @@ def ensemble_predict(models, features_matrix, device, prices_array=None):
 # Inferencia ensemble multi-punto (curva de mercado)
 # ----------------------------------------------------------------------
 
+
 def ensemble_predict_multipoint(models, features_matrix, device, current_price, n_points=5):
     """Genera prediccion multi-punto del ensemble (curva de mercado).
 
@@ -380,12 +392,14 @@ def ensemble_predict_multipoint(models, features_matrix, device, current_price, 
         pred_price = current_price * (1.0 + cumulative_return)
         step_confidence = base_confidence * decay_factor
 
-        points.append({
-            "horizon_seconds": horizon_seconds,
-            "predicted_price": round(float(pred_price), 2),
-            "confidence": round(float(max(step_confidence, 0.05)), 4),
-            "direction_prob": round(float(base_dir_prob), 4),
-        })
+        points.append(
+            {
+                "horizon_seconds": horizon_seconds,
+                "predicted_price": round(float(pred_price), 2),
+                "confidence": round(float(max(step_confidence, 0.05)), 4),
+                "direction_prob": round(float(base_dir_prob), 4),
+            }
+        )
 
     return points
 
@@ -393,6 +407,7 @@ def ensemble_predict_multipoint(models, features_matrix, device, current_price, 
 # ----------------------------------------------------------------------
 # Inferencia legacy
 # ----------------------------------------------------------------------
+
 
 def legacy_predict(models, prices, volumes, fg_val, device):
     """Prediccion usando modelos TFT legacy."""
@@ -406,7 +421,9 @@ def legacy_predict(models, prices, volumes, fg_val, device):
     sma_short = compute_sma(prices_arr, min(5, len(prices_arr)))
     sma_long = compute_sma(prices_arr, min(10, len(prices_arr)))
     sma_ratio = np.where(
-        sma_long > 0, (sma_short / (sma_long + 1e-10)) - 1.0, 0.0,
+        sma_long > 0,
+        (sma_short / (sma_long + 1e-10)) - 1.0,
+        0.0,
     )
 
     p_min, p_max = prices_arr.min(), prices_arr.max()
@@ -419,12 +436,15 @@ def legacy_predict(models, prices, volumes, fg_val, device):
     sma_ratio_clipped = np.clip(sma_ratio * 10, -1.0, 1.0)
 
     window_size = 10
-    feats = np.stack([
-        prices_norm[-window_size:],
-        volumes_norm[-window_size:],
-        rsi_norm[-window_size:],
-        sma_ratio_clipped[-window_size:],
-    ], axis=1)
+    feats = np.stack(
+        [
+            prices_norm[-window_size:],
+            volumes_norm[-window_size:],
+            rsi_norm[-window_size:],
+            sma_ratio_clipped[-window_size:],
+        ],
+        axis=1,
+    )
 
     tech = CouncilOfAgents.technical_agent(prices_arr)
     sent = CouncilOfAgents.sentiment_agent(fg_val)
@@ -440,14 +460,12 @@ def legacy_predict(models, prices, volumes, fg_val, device):
         if not preds:
             return None
 
-    pred_norm = preds[0] * 0.8 + \
-        (preds[1] if len(preds) > 1 else preds[0]) * 0.2
+    pred_norm = preds[0] * 0.8 + (preds[1] if len(preds) > 1 else preds[0]) * 0.2
     pred_norm = max(-0.5, min(1.5, pred_norm))
     pred_final = (pred_norm * p_denom) + p_min
     current_price = prices_arr[-1]
     max_change = current_price * 0.10
-    pred_final = np.clip(pred_final, current_price -
-                         max_change, current_price + max_change)
+    pred_final = np.clip(pred_final, current_price - max_change, current_price + max_change)
 
     # Sin correccion de sesgo — dejar que el modelo prediga sin ajuste
     # La correccion de sesgo estatica empeora en mercados cambiantes
@@ -463,6 +481,7 @@ def legacy_predict(models, prices, volumes, fg_val, device):
 # ----------------------------------------------------------------------
 # Evaluacion de precision (por modelo)
 # ----------------------------------------------------------------------
+
 
 def _evaluate_past_predictions(redis_client, current_price: float, model_key: str):
     """Evalua predicciones pasadas de un modelo especifico.
@@ -535,13 +554,15 @@ def _evaluate_past_predictions(redis_client, current_price: float, model_key: st
                 acc["correct_direction"] += 1
             acc["total_direction"] += 1
 
-            acc["recent_errors"].append({
-                "timestamp": entry["timestamp"],
-                "pct_error": round(pct_error, 4),
-                "direction_correct": direction_correct,
-                "predicted": predicted,
-                "actual": current_price,
-            })
+            acc["recent_errors"].append(
+                {
+                    "timestamp": entry["timestamp"],
+                    "pct_error": round(pct_error, 4),
+                    "direction_correct": direction_correct,
+                    "predicted": predicted,
+                    "actual": current_price,
+                }
+            )
             acc["recent_errors"] = acc["recent_errors"][-100:]
             evaluated_count += 1
 
@@ -557,11 +578,12 @@ def _evaluate_past_predictions(redis_client, current_price: float, model_key: st
         if evaluated_count > 0:
             n = acc["total_evaluated"]
             acc["mae"] = round(acc["total_abs_error"] / n, 2) if n > 0 else 0
-            acc["mape"] = round(
-                acc["total_abs_pct_error"] / n, 4) if n > 0 else 0
-            acc["direction_accuracy"] = round(
-                (acc["correct_direction"] / acc["total_direction"]) * 100, 1
-            ) if acc["total_direction"] > 0 else 0
+            acc["mape"] = round(acc["total_abs_pct_error"] / n, 4) if n > 0 else 0
+            acc["direction_accuracy"] = (
+                round((acc["correct_direction"] / acc["total_direction"]) * 100, 1)
+                if acc["total_direction"] > 0
+                else 0
+            )
 
             redis_client.set(accuracy_redis_key, json.dumps(acc))
 
@@ -589,6 +611,7 @@ def _sync_primary_accuracy(redis_client):
 # ----------------------------------------------------------------------
 # Log estructurado de comparacion de modelos
 # ----------------------------------------------------------------------
+
 
 def _log_model_comparison(redis_client, legacy_result, ensemble_result, current_price):
     """Registra un log estructurado para comparar ambos modelos.
@@ -634,6 +657,7 @@ def _log_model_comparison(redis_client, legacy_result, ensemble_result, current_
 # Loop principal de inferencia dual
 # ----------------------------------------------------------------------
 
+
 def run_inference():
     """Loop principal de inferencia v4 (Dual Model Parallel).
 
@@ -650,8 +674,7 @@ def run_inference():
 
     # Cargar ambos modelos
     legacy = load_legacy_models(device)
-    has_legacy = legacy.get("recent") is not None or legacy.get(
-        "historical") is not None
+    has_legacy = legacy.get("recent") is not None or legacy.get("historical") is not None
 
     ensemble = load_ensemble_models(device)
     has_ensemble = ensemble is not None
@@ -675,8 +698,9 @@ def run_inference():
         print(f"   Ensemble conf threshold: {conf_threshold:.1%}")
         val_results = config.get("validation_results", {})
         if val_results:
-            print(f"   Ensemble val accuracy: "
-                  f"{val_results.get('ensemble_filtered_accuracy', 0):.1%}")
+            print(
+                f"   Ensemble val accuracy: {val_results.get('ensemble_filtered_accuracy', 0):.1%}"
+            )
     else:
         conf_threshold = 0.3
     print("=" * 60)
@@ -718,7 +742,11 @@ def run_inference():
             if has_legacy:
                 try:
                     prediction = legacy_predict(
-                        legacy, prices, volumes, fg_val, device,
+                        legacy,
+                        prices,
+                        volumes,
+                        fg_val,
+                        device,
                     )
                     if prediction is not None:
                         pred_final = prediction["predicted_price"]
@@ -738,8 +766,7 @@ def run_inference():
                         }
 
                         # Publicar en Redis (legacy)
-                        redis.set("live_prediction_legacy",
-                                  json.dumps(legacy_result))
+                        redis.set("live_prediction_legacy", json.dumps(legacy_result))
 
                         history_entry = {
                             "timestamp": time.time(),
@@ -748,13 +775,11 @@ def run_inference():
                             "confidence": float(prediction["confidence"]),
                             "sentiment_bias": bias,
                         }
-                        redis.lpush("prediction_history_legacy",
-                                    json.dumps(history_entry))
+                        redis.lpush("prediction_history_legacy", json.dumps(history_entry))
                         redis.ltrim("prediction_history_legacy", 0, 999)
 
                         # Evaluar precision legacy
-                        _evaluate_past_predictions(
-                            redis, float(current_price), "legacy")
+                        _evaluate_past_predictions(redis, float(current_price), "legacy")
 
                 except Exception as e:
                     print(f"[WARN] Error en legacy TFT: {e}")
@@ -781,17 +806,18 @@ def run_inference():
                     if should_refresh:
                         # Recalcular curva completa
                         curve_points = ensemble_predict_multipoint(
-                            ensemble, features, device, current_price,
+                            ensemble,
+                            features,
+                            device,
+                            current_price,
                             n_points=5,
                         )
-                        base_pred = ensemble_predict(
-                            ensemble, features, device)
+                        base_pred = ensemble_predict(ensemble, features, device)
 
                         if curve_points and base_pred:
                             cached_ensemble_curve = curve_points
                             cached_ensemble_base = base_pred
-                            print(f"  [ENS] Curva recalculada en ciclo "
-                                  f"{cycle_count}")
+                            print(f"  [ENS] Curva recalculada en ciclo {cycle_count}")
                     else:
                         # Usar cache: ajustar precios por diferencia de
                         # precio actual vs cuando se calculo
@@ -802,14 +828,17 @@ def run_inference():
                         direction_prob = base_pred["direction_prob"]
                         confidence = base_pred["confidence"]
                         predicted_return = base_pred["predicted_return"]
-                        pred_final_ens = current_price * \
-                            (1.0 + predicted_return)
+                        pred_final_ens = current_price * (1.0 + predicted_return)
 
                         # Siempre predecir -- no filtrar por confianza
                         # La confianza se reporta como metrica informativa
-                        bias_ens = ("Bullish" if pred_final_ens > current_price
-                                    else "Bearish" if pred_final_ens < current_price
-                                    else "Neutral")
+                        bias_ens = (
+                            "Bullish"
+                            if pred_final_ens > current_price
+                            else "Bearish"
+                            if pred_final_ens < current_price
+                            else "Neutral"
+                        )
 
                         ensemble_result = {
                             "timestamp": time.time(),
@@ -826,8 +855,7 @@ def run_inference():
                         }
 
                         # Publicar en Redis (ensemble)
-                        redis.set("live_prediction_ensemble",
-                                  json.dumps(ensemble_result))
+                        redis.set("live_prediction_ensemble", json.dumps(ensemble_result))
 
                         history_entry = {
                             "timestamp": time.time(),
@@ -836,13 +864,11 @@ def run_inference():
                             "confidence": float(confidence),
                             "sentiment_bias": bias_ens,
                         }
-                        redis.lpush("prediction_history_ensemble",
-                                    json.dumps(history_entry))
+                        redis.lpush("prediction_history_ensemble", json.dumps(history_entry))
                         redis.ltrim("prediction_history_ensemble", 0, 999)
 
                         # Evaluar precision ensemble
-                        _evaluate_past_predictions(
-                            redis, float(current_price), "ensemble")
+                        _evaluate_past_predictions(redis, float(current_price), "ensemble")
 
                 except Exception as e:
                     print(f"[WARN] Error en ensemble: {e}")
@@ -850,8 +876,7 @@ def run_inference():
             # ==========================================================
             # Publicar prediccion primaria (backward-compatible)
             # ==========================================================
-            primary_result = (legacy_result if primary_model == "legacy"
-                              else ensemble_result)
+            primary_result = legacy_result if primary_model == "legacy" else ensemble_result
             if primary_result:
                 redis.set("live_prediction", json.dumps(primary_result))
                 hist = {
@@ -870,8 +895,7 @@ def run_inference():
             # ==========================================================
             # Log de comparacion
             # ==========================================================
-            _log_model_comparison(
-                redis, legacy_result, ensemble_result, current_price)
+            _log_model_comparison(redis, legacy_result, ensemble_result, current_price)
 
             # ==========================================================
             # Print resumen del ciclo
@@ -893,8 +917,7 @@ def run_inference():
                 cf = md.get("continuation_factor", 0)
                 refresh = "🔄" if cycle_count % ensemble_refresh_interval == 1 else "📌"
                 parts.append(
-                    f"ENS=${ep:,.2f}({ed:+.2f}%,{nc}pts)"
-                    f" mom={mom:+.3f}% cf={cf:.2f} {refresh}"
+                    f"ENS=${ep:,.2f}({ed:+.2f}%,{nc}pts) mom={mom:+.3f}% cf={cf:.2f} {refresh}"
                 )
             else:
                 parts.append("ENS=N/A")
@@ -908,6 +931,7 @@ def run_inference():
             consecutive_errors += 1
             print(f"[ERROR] Error inferencia ({consecutive_errors}): {e}")
             import traceback
+
             traceback.print_exc()
             if consecutive_errors > 5:
                 print("[WARN] Demasiados errores, esperando 60s...")

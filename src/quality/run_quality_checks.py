@@ -41,8 +41,7 @@ def persist_results(spark: SparkSession, results: list[CheckResult]):
             spark.sql("DESCRIBE TABLE cryptolake.quality.check_results")
             df.writeTo("cryptolake.quality.check_results").append()
         except Exception:
-            df.writeTo("cryptolake.quality.check_results").using(
-                "iceberg").createOrReplace()
+            df.writeTo("cryptolake.quality.check_results").using("iceberg").createOrReplace()
 
         print(f"✅ {len(rows)} check results persisted to quality.check_results")
     except Exception as e:
@@ -93,8 +92,7 @@ def main(layer: str = "all"):
     print(f"Time: {datetime.now(UTC).isoformat()}")
     print("=" * 60)
 
-    spark = SparkSession.builder.appName(
-        "CryptoLake-QualityChecks").getOrCreate()
+    spark = SparkSession.builder.appName("CryptoLake-QualityChecks").getOrCreate()
 
     all_results: list[CheckResult] = []
 
@@ -106,8 +104,10 @@ def main(layer: str = "all"):
             bv.check_all()
             all_results.extend(bv.results)
             summary = bv.get_summary()
-            print(f"  Summary: {summary['passed']}/{summary['total']} passed "
-                  f"({summary['pass_rate']}%)")
+            print(
+                f"  Summary: {summary['passed']}/{summary['total']} passed "
+                f"({summary['pass_rate']}%)"
+            )
 
         if layer in ("all", "silver"):
             print("\n⚪ SILVER Layer Checks")
@@ -116,8 +116,10 @@ def main(layer: str = "all"):
             sv.check_all()
             all_results.extend(sv.results)
             summary = sv.get_summary()
-            print(f"  Summary: {summary['passed']}/{summary['total']} passed "
-                  f"({summary['pass_rate']}%)")
+            print(
+                f"  Summary: {summary['passed']}/{summary['total']} passed "
+                f"({summary['pass_rate']}%)"
+            )
 
         if layer in ("all", "gold"):
             print("\n🟡 GOLD Layer Checks")
@@ -126,8 +128,10 @@ def main(layer: str = "all"):
             gv.check_all()
             all_results.extend(gv.results)
             summary = gv.get_summary()
-            print(f"  Summary: {summary['passed']}/{summary['total']} passed "
-                  f"({summary['pass_rate']}%)")
+            print(
+                f"  Summary: {summary['passed']}/{summary['total']} passed "
+                f"({summary['pass_rate']}%)"
+            )
 
         # Overall summary
         total = len(all_results)
@@ -142,8 +146,7 @@ def main(layer: str = "all"):
         print(f"  ✅ Passed:     {passed}")
         print(f"  ❌ Failed:     {failed}")
         print(f"  ⚠️  Warnings:   {warnings}")
-        print(
-            f"  Pass rate:     {round(passed / total * 100, 1) if total > 0 else 0}%")
+        print(f"  Pass rate:     {round(passed / total * 100, 1) if total > 0 else 0}%")
 
         # Persist results
         persist_results(spark, all_results)

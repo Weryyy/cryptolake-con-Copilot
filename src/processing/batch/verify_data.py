@@ -9,7 +9,7 @@ def verify():
         "cryptolake.bronze.historical_prices",
         "cryptolake.bronze.fear_greed_index",
         "cryptolake.bronze.realtime_prices",
-        "cryptolake.silver.daily_prices"
+        "cryptolake.silver.daily_prices",
     ]
 
     for table in tables:
