@@ -11,8 +11,10 @@ from datetime import timedelta
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 # Auto-refresh cada 30 segundos
 from streamlit_autorefresh import st_autorefresh
@@ -145,23 +147,41 @@ def fetch_dq_reports():
         return []
 
 
+def _render_plotly_html(fig, height=500, key="chart"):
+    """Render a Plotly figure as native HTML to preserve zoom across refreshes."""
+    html = pio.to_html(fig, full_html=False, include_plotlyjs="cdn", config={"responsive": True})
+    components.html(
+        f'<div id="{key}">{html}</div>',
+        height=height + 40,
+        scrolling=False,
+    )
+
+
+def _compute_ema(prices, span=5):
+    """Compute Exponential Moving Average for a list of prices."""
+    s = pd.Series(prices)
+    return s.ewm(span=span, adjust=False).mean().tolist()
+
+
 @st.fragment(run_every=timedelta(seconds=30))
 def realtime_chart_panel():
     """Auto-refreshing chart + accuracy panel — fragment preserves zoom."""
     chart_col, accuracy_col = st.columns([3, 1])
 
     with chart_col:
-        # Controls row
-        ctrl_left, ctrl_right = st.columns([1, 1])
-        with ctrl_left:
+        # Controls row — line visibility toggles
+        st.markdown("##### 📊 Líneas del gráfico")
+        tog_cols = st.columns(4)
+        with tog_cols[0]:
+            show_legacy = st.checkbox("🔵 Legacy TFT", value=True, key="show_legacy")
+        with tog_cols[1]:
+            show_ensemble = st.checkbox("🟣 Ensemble", value=True, key="show_ensemble")
+        with tog_cols[2]:
+            show_ema = st.checkbox("🟢 EMA Prediction", value=True, key="show_ema")
+        with tog_cols[3]:
             show_pred_history = st.checkbox(
-                "🟠 Mostrar historial predicciones", value=False, key="show_pred_hist"
+                "🟠 Historial predicciones", value=False, key="show_pred_hist"
             )
-        with ctrl_right:
-            if st.button("🔍 Vista completa", key="reset_zoom"):
-                # Reset zoom guardado
-                if "chart_zoom" in st.session_state:
-                    del st.session_state["chart_zoom"]
 
         # Candlestick Chart (Bitcoin by default for overview)
         try:
@@ -193,7 +213,12 @@ def realtime_chart_panel():
             last_price = df_ohlc["close"].iloc[-1]
 
             # Legacy TFT prediction (single point - cyan line)
-            if dual and dual.get("legacy") and dual["legacy"].get("predicted_price", 0) > 0:
+            if (
+                show_legacy
+                and dual
+                and dual.get("legacy")
+                and dual["legacy"].get("predicted_price", 0) > 0
+            ):
                 leg = dual["legacy"]
                 pred_time_leg = last_time + pd.Timedelta(minutes=5)
                 fig_ohlc.add_trace(
@@ -208,7 +233,7 @@ def realtime_chart_panel():
                 )
 
             # Ensemble prediction (multi-point curve - magenta)
-            if dual and dual.get("ensemble"):
+            if show_ensemble and dual and dual.get("ensemble"):
                 ens = dual["ensemble"]
                 curve = ens.get("prediction_curve", [])
                 if curve and len(curve) > 0:
@@ -241,6 +266,27 @@ def realtime_chart_panel():
                         )
                     )
 
+            # EMA-smoothed prediction line (green) — smooths noisy predictions
+            if show_ema:
+                pred_hist_ema = fetch_prediction_history("ensemble", limit=30)
+                if pred_hist_ema and len(pred_hist_ema) > 2:
+                    ema_times = []
+                    ema_raw = []
+                    for ph in pred_hist_ema:
+                        ts = pd.to_datetime(ph["timestamp"], unit="s", utc=True)
+                        ema_times.append(ts)
+                        ema_raw.append(ph["predicted_price"])
+                    ema_values = _compute_ema(ema_raw, span=5)
+                    fig_ohlc.add_trace(
+                        go.Scatter(
+                            x=ema_times,
+                            y=ema_values,
+                            mode="lines",
+                            name="EMA Prediction",
+                            line=dict(color="limegreen", width=2.5),
+                        )
+                    )
+
             # Prediction history (orange line - toggled by checkbox)
             if show_pred_history:
                 pred_hist = fetch_prediction_history("ensemble", limit=60)
@@ -269,29 +315,58 @@ def realtime_chart_panel():
                 height=500,
                 uirevision="btc-ohlc-main",
             )
-            st.plotly_chart(fig_ohlc, width="stretch", key="ohlc_main")
+            # Render as native HTML to preserve zoom across auto-refreshes
+            _render_plotly_html(fig_ohlc, height=500, key="ohlc_main")
         else:
             st.info("Esperando primer micro-batch de datos OHLC...")
 
     with accuracy_col:
-        # -- Panel de Precision Dual --
-        st.markdown("### Model Accuracy")
+        # -- Panel: Best Model of the Day --
+        st.markdown("### 🏆 Best Model Today")
         comparison = fetch_model_comparison()
         acc = fetch_prediction_accuracy()
 
-        # Show primary model gauge (backward-compatible)
-        if acc and acc.get("total_evaluated", 0) > 0:
-            dir_acc = acc.get("direction_accuracy", 0)
+        # Determine best model from comparison data
+        best_name = "Primary"
+        best_acc = 0
+        best_color = "cyan"
+
+        if comparison:
+            leg_acc = comparison.get("legacy")
+            ens_acc = comparison.get("ensemble")
+            leg_dir = (
+                leg_acc.get("direction_accuracy", 0)
+                if leg_acc and leg_acc.get("total_evaluated", 0) > 0
+                else 0
+            )
+            ens_dir = (
+                ens_acc.get("direction_accuracy", 0)
+                if ens_acc and ens_acc.get("total_evaluated", 0) > 0
+                else 0
+            )
+            if ens_dir >= leg_dir and ens_dir > 0:
+                best_name = "Ensemble"
+                best_acc = ens_dir
+                best_color = "magenta"
+            elif leg_dir > 0:
+                best_name = "Legacy TFT"
+                best_acc = leg_dir
+                best_color = "cyan"
+
+        if best_acc == 0 and acc and acc.get("total_evaluated", 0) > 0:
+            best_acc = acc.get("direction_accuracy", 0)
+
+        if best_acc > 0:
             fig_acc = go.Figure(
                 go.Indicator(
                     mode="gauge+number",
-                    value=dir_acc,
+                    value=best_acc,
                     domain={"x": [0, 1], "y": [0, 1]},
-                    title={"text": "Primary Direction %"},
+                    title={"text": f"{best_name} Direction %"},
                     number={"suffix": "%"},
                     gauge={
                         "axis": {"range": [0, 100]},
-                        "bar": {"color": "cyan"},
+                        "bar": {"color": best_color},
                         "steps": [
                             {"range": [0, 40], "color": "darkred"},
                             {"range": [40, 55], "color": "orange"},
@@ -341,7 +416,7 @@ def realtime_chart_panel():
             st.metric("MAE", f"${acc.get('mae', 0):,.2f}")
             st.metric("Evaluaciones", f"{acc.get('total_evaluated', 0)}")
 
-        if not acc or acc.get("total_evaluated", 0) == 0:
+        if best_acc == 0 and (not acc or acc.get("total_evaluated", 0) == 0):
             st.info("Recopilando datos de precision...")
             st.caption("Las metricas apareceran tras ~2 min de predicciones")
 
