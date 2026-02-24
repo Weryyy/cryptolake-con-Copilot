@@ -226,7 +226,7 @@ def train_ensemble():
     # -- 2. Feature engineering --
     print("\n[FEAT] Construyendo features (20 dimensiones)...")
     lookback = 30  # warmup para que features sean estables
-    seq_len = 20   # ventana LSTM (20 pasos x 20 features)
+    seq_len = 10   # ventana LSTM (10 pasos x 20 features)
 
     # Features para modelos tabulares (GB + RF)
     X_tab, y_dir, y_ret = build_training_samples(
@@ -356,17 +356,17 @@ def train_ensemble():
             y_ret_seq[split_seq:]).unsqueeze(-1).to(device)
 
         model = ReturnLSTM(
-            input_dim=N_FEATURES, hidden_dim=128, num_layers=2, dropout=0.2,
+            input_dim=N_FEATURES, hidden_dim=64, num_layers=2, dropout=0.2,
         ).to(device)
 
         optimizer = optim.AdamW(
             model.parameters(), lr=0.001, weight_decay=1e-4)
         mse_loss = nn.MSELoss()
         bce_loss = nn.BCELoss()
-        # Focal-style weighting: direccion vale 3x mas que retorno
+        # Focal-style weighting: direccion vale 2x mas que retorno
         # porque medimos direction_accuracy, no MAE
-        direction_loss_weight = 3.0
-        return_loss_weight = 0.5
+        direction_loss_weight = 2.0
+        return_loss_weight = 1.0
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode="min", factor=0.5, patience=15,
         )

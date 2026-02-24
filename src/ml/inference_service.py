@@ -72,7 +72,7 @@ def load_ensemble_models(device):
         # Intentar cargar con la arquitectura nueva (hidden_dim=128 + attention)
         # Si falla (pesos viejos de hidden_dim=64), usar arquitectura legacy
         loaded = False
-        for hidden_dim in [128, 64]:
+        for hidden_dim in [64, 128]:
             try:
                 lstm = ReturnLSTM(
                     input_dim=N_FEATURES, hidden_dim=hidden_dim,
@@ -735,13 +735,11 @@ def run_inference():
                         pred_final_ens = current_price * \
                             (1.0 + predicted_return)
 
-                        # Filtro de confianza
-                        if confidence < conf_threshold:
-                            pred_final_ens = current_price
-                            bias_ens = "Neutral"
-                        else:
-                            bias_ens = ("Bullish" if pred_final_ens > current_price
-                                        else "Bearish")
+                        # Siempre predecir -- no filtrar por confianza
+                        # La confianza se reporta como metrica informativa
+                        bias_ens = ("Bullish" if pred_final_ens > current_price
+                                    else "Bearish" if pred_final_ens < current_price
+                                    else "Neutral")
 
                         ensemble_result = {
                             "timestamp": time.time(),

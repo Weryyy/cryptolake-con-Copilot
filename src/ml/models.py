@@ -186,7 +186,7 @@ class ReturnLSTM(nn.Module):
     Output: retorno predicho (escalar) + probabilidad de direccion
     """
 
-    def __init__(self, input_dim=20, hidden_dim=128, num_layers=2, dropout=0.2):
+    def __init__(self, input_dim=20, hidden_dim=64, num_layers=2, dropout=0.2):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.lstm = nn.LSTM(
@@ -203,20 +203,16 @@ class ReturnLSTM(nn.Module):
         self.layer_norm = nn.LayerNorm(hidden_dim)
         # Cabeza de regresion (predice retorno %)
         self.return_head = nn.Sequential(
-            nn.Linear(hidden_dim, 64),
+            nn.Linear(hidden_dim, 32),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(64, 32),
-            nn.ReLU(),
             nn.Linear(32, 1),
         )
         # Cabeza de clasificacion (predice direccion)
         self.direction_head = nn.Sequential(
-            nn.Linear(hidden_dim, 64),
+            nn.Linear(hidden_dim, 32),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(64, 32),
-            nn.ReLU(),
             nn.Linear(32, 1),
             nn.Sigmoid(),
         )
