@@ -52,3 +52,9 @@ Thumbs.db
 data/
 *.parquet
 *.avro
+
+# Iceberg metadata artifacts
+*.metadata.json
+
+# Backup files
+*.bak
