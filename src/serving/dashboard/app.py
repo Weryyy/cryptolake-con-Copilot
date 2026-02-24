@@ -152,8 +152,6 @@ def fetch_dq_reports():
         return []
 
 
-
-
 @st.fragment(run_every=timedelta(seconds=30))
 def realtime_chart_panel():
     """Auto-refreshing chart + accuracy panel — fragment preserves zoom."""
