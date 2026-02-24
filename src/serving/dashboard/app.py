@@ -10,10 +10,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 import os
 import time
+from datetime import timedelta
 
 # Auto-refresh cada 30 segundos
 from streamlit_autorefresh import st_autorefresh
-st_autorefresh(interval=30 * 1000, key="data_refresh")
+st_autorefresh(interval=300 * 1000, key="data_refresh")
 
 # Configuration
 API_URL = os.getenv("API_URL", "http://localhost:8000")
@@ -120,6 +121,19 @@ def fetch_realtime_ohlc(coin_id: str):
         return []
 
 
+@st.cache_data(ttl=30)
+def fetch_prediction_history(model: str = "ensemble", limit: int = 60):
+    """Fetch historial de predicciones pasadas para graficar."""
+    try:
+        url = f"{API_URL}/api/v1/analytics/prediction-history/{model}"
+        response = requests.get(url, params={"limit": limit}, timeout=15)
+        if response.status_code == 200:
+            return response.json()
+        return []
+    except Exception:
+        return []
+
+
 def fetch_system_alerts():
     try:
         response = requests.get(
@@ -136,6 +150,204 @@ def fetch_dq_reports():
         return response.json()
     except:
         return []
+
+
+
+
+@st.fragment(run_every=timedelta(seconds=30))
+def realtime_chart_panel():
+    """Auto-refreshing chart + accuracy panel — fragment preserves zoom."""
+    chart_col, accuracy_col = st.columns([3, 1])
+
+    with chart_col:
+        # Controls row
+        ctrl_left, ctrl_right = st.columns([1, 1])
+        with ctrl_left:
+            show_pred_history = st.checkbox(
+                "🟠 Mostrar historial predicciones",
+                value=False,
+                key="show_pred_hist")
+        with ctrl_right:
+            if st.button("🔍 Vista completa", key="reset_zoom"):
+                # Reset zoom guardado
+                if 'chart_zoom' in st.session_state:
+                    del st.session_state['chart_zoom']
+
+        # Candlestick Chart (Bitcoin by default for overview)
+        try:
+            ohlc_data = fetch_realtime_ohlc("bitcoin")
+        except Exception as e:
+            ohlc_data = []
+            st.sidebar.error(f"OHLC fetch error: {e}")
+
+        if ohlc_data and len(ohlc_data) > 0:
+            df_ohlc = pd.DataFrame(ohlc_data)
+            df_ohlc['timestamp'] = pd.to_datetime(df_ohlc['timestamp'])
+
+            fig_ohlc = go.Figure(data=[go.Candlestick(
+                x=df_ohlc['timestamp'],
+                open=df_ohlc['open'],
+                high=df_ohlc['high'],
+                low=df_ohlc['low'],
+                close=df_ohlc['close'],
+                name='BTC Real-time'
+            )])
+
+            # Dual Model Prediction Curves
+            dual = fetch_dual_prediction()
+            last_time = df_ohlc['timestamp'].iloc[-1]
+            last_price = df_ohlc['close'].iloc[-1]
+
+            # Legacy TFT prediction (single point - cyan line)
+            if (dual and dual.get('legacy')
+                    and dual['legacy'].get('predicted_price', 0) > 0):
+                leg = dual['legacy']
+                pred_time_leg = last_time + pd.Timedelta(minutes=5)
+                fig_ohlc.add_trace(go.Scatter(
+                    x=[last_time, pred_time_leg],
+                    y=[last_price, leg['predicted_price']],
+                    mode='lines+markers',
+                    name='Legacy TFT',
+                    line=dict(color='cyan', width=3, dash='dashdot'),
+                    marker=dict(size=10, symbol='star')
+                ))
+
+            # Ensemble prediction (multi-point curve - magenta)
+            if dual and dual.get('ensemble'):
+                ens = dual['ensemble']
+                curve = ens.get('prediction_curve', [])
+                if curve and len(curve) > 0:
+                    curve_times = [last_time]
+                    curve_prices = [last_price]
+                    for pt in curve:
+                        t = last_time + pd.Timedelta(
+                            seconds=pt['horizon_seconds'])
+                        curve_times.append(t)
+                        curve_prices.append(pt['predicted_price'])
+                    fig_ohlc.add_trace(go.Scatter(
+                        x=curve_times,
+                        y=curve_prices,
+                        mode='lines+markers',
+                        name='Ensemble Curve',
+                        line=dict(color='magenta',
+                                  width=2, dash='dot'),
+                        marker=dict(size=6, symbol='diamond')
+                    ))
+                elif ens.get('predicted_price', 0) > 0:
+                    pred_time_ens = last_time + pd.Timedelta(minutes=3)
+                    fig_ohlc.add_trace(go.Scatter(
+                        x=[last_time, pred_time_ens],
+                        y=[last_price, ens['predicted_price']],
+                        mode='lines+markers',
+                        name='Ensemble',
+                        line=dict(color='magenta',
+                                  width=2, dash='dot'),
+                        marker=dict(size=8, symbol='diamond')
+                    ))
+
+            # Prediction history (orange line - toggled by checkbox)
+            if show_pred_history:
+                pred_hist = fetch_prediction_history(
+                    "ensemble", limit=60)
+                if pred_hist and len(pred_hist) > 1:
+                    hist_times = []
+                    hist_prices = []
+                    for ph in pred_hist:
+                        ts = pd.to_datetime(
+                            ph['timestamp'], unit='s', utc=True)
+                        hist_times.append(ts)
+                        hist_prices.append(ph['predicted_price'])
+                    fig_ohlc.add_trace(go.Scatter(
+                        x=hist_times,
+                        y=hist_prices,
+                        mode='lines',
+                        name='Predicciones anteriores',
+                        line=dict(color='orange', width=1.5,
+                                  dash='solid'),
+                        opacity=0.7,
+                    ))
+
+            fig_ohlc.update_layout(
+                title="Real-time BTC Candles & Dual AI Predictions",
+                xaxis_rangeslider_visible=False,
+                template="plotly_dark",
+                height=500,
+                uirevision='btc-ohlc-main',
+            )
+            st.plotly_chart(fig_ohlc, width='stretch',
+                            key='ohlc_main')
+        else:
+            st.info("Esperando primer micro-batch de datos OHLC...")
+
+    with accuracy_col:
+        # -- Panel de Precision Dual --
+        st.markdown("### Model Accuracy")
+        comparison = fetch_model_comparison()
+        acc = fetch_prediction_accuracy()
+
+        # Show primary model gauge (backward-compatible)
+        if acc and acc.get("total_evaluated", 0) > 0:
+            dir_acc = acc.get("direction_accuracy", 0)
+            fig_acc = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=dir_acc,
+                domain={'x': [0, 1], 'y': [0, 1]},
+                title={'text': "Primary Direction %"},
+                number={'suffix': "%"},
+                gauge={
+                    'axis': {'range': [0, 100]},
+                    'bar': {'color': "cyan"},
+                    'steps': [
+                        {'range': [0, 40], 'color': "darkred"},
+                        {'range': [40, 55], 'color': "orange"},
+                        {'range': [55, 70], 'color': "gold"},
+                        {'range': [70, 100], 'color': "green"}
+                    ],
+                }
+            ))
+            fig_acc.update_layout(
+                template="plotly_dark",
+                height=200,
+                margin=dict(l=20, r=20, t=40, b=20),
+                uirevision='accuracy-gauge',
+            )
+            st.plotly_chart(fig_acc, width='stretch')
+
+        # Dual model comparison table
+        if comparison:
+            leg_acc = comparison.get("legacy")
+            ens_acc = comparison.get("ensemble")
+
+            if leg_acc or ens_acc:
+                st.markdown("**Model Comparison**")
+                comp_data = []
+                if leg_acc and leg_acc.get("total_evaluated", 0) > 0:
+                    comp_data.append({
+                        "Model": "Legacy TFT",
+                        "Dir %": f"{leg_acc.get('direction_accuracy', 0):.1f}%",
+                        "MAE": f"${leg_acc.get('mae', 0):,.0f}",
+                        "Evals": leg_acc.get("total_evaluated", 0),
+                    })
+                if ens_acc and ens_acc.get("total_evaluated", 0) > 0:
+                    comp_data.append({
+                        "Model": "Ensemble",
+                        "Dir %": f"{ens_acc.get('direction_accuracy', 0):.1f}%",
+                        "MAE": f"${ens_acc.get('mae', 0):,.0f}",
+                        "Evals": ens_acc.get("total_evaluated", 0),
+                    })
+                if comp_data:
+                    st.dataframe(pd.DataFrame(comp_data),
+                                 hide_index=True,
+                                 width='stretch')
+        elif acc and acc.get("total_evaluated", 0) > 0:
+            st.metric("MAE", f"${acc.get('mae', 0):,.2f}")
+            st.metric("Evaluaciones",
+                      f"{acc.get('total_evaluated', 0)}")
+
+        if not acc or acc.get("total_evaluated", 0) == 0:
+            st.info("Recopilando datos de precision...")
+            st.caption(
+                "Las metricas apareceran tras ~2 min de predicciones")
 
 
 pred = fetch_prediction()
@@ -232,160 +444,8 @@ if page == "Market Overview":
             with p_col3:
                 st.info(f"Market Bias: **{pred['sentiment_bias']}**")
 
-            # -- Layout: Chart (izquierda) + Accuracy Panel (derecha) --
-            chart_col, accuracy_col = st.columns([3, 1])
-
-            with chart_col:
-                # Candlestick Chart (Bitcoin by default for overview)
-                try:
-                    ohlc_data = fetch_realtime_ohlc("bitcoin")
-                except Exception as e:
-                    ohlc_data = []
-                    st.sidebar.error(f"OHLC fetch error: {e}")
-
-                if ohlc_data and len(ohlc_data) > 0:
-                    df_ohlc = pd.DataFrame(ohlc_data)
-                    df_ohlc['timestamp'] = pd.to_datetime(df_ohlc['timestamp'])
-
-                    fig_ohlc = go.Figure(data=[go.Candlestick(
-                        x=df_ohlc['timestamp'],
-                        open=df_ohlc['open'],
-                        high=df_ohlc['high'],
-                        low=df_ohlc['low'],
-                        close=df_ohlc['close'],
-                        name='BTC Real-time'
-                    )])
-
-                    # Dual Model Prediction Curves
-                    dual = fetch_dual_prediction()
-                    last_time = df_ohlc['timestamp'].iloc[-1]
-                    last_price = df_ohlc['close'].iloc[-1]
-
-                    # Legacy TFT prediction (single point - cyan line)
-                    if (dual and dual.get('legacy')
-                            and dual['legacy'].get('predicted_price', 0) > 0):
-                        leg = dual['legacy']
-                        pred_time_leg = last_time + pd.Timedelta(minutes=5)
-                        fig_ohlc.add_trace(go.Scatter(
-                            x=[last_time, pred_time_leg],
-                            y=[last_price, leg['predicted_price']],
-                            mode='lines+markers',
-                            name='Legacy TFT',
-                            line=dict(color='cyan', width=3, dash='dashdot'),
-                            marker=dict(size=10, symbol='star')
-                        ))
-
-                    # Ensemble prediction (multi-point curve - magenta)
-                    if dual and dual.get('ensemble'):
-                        ens = dual['ensemble']
-                        curve = ens.get('prediction_curve', [])
-                        if curve and len(curve) > 0:
-                            curve_times = [last_time]
-                            curve_prices = [last_price]
-                            for pt in curve:
-                                t = last_time + pd.Timedelta(
-                                    seconds=pt['horizon_seconds'])
-                                curve_times.append(t)
-                                curve_prices.append(pt['predicted_price'])
-                            fig_ohlc.add_trace(go.Scatter(
-                                x=curve_times,
-                                y=curve_prices,
-                                mode='lines+markers',
-                                name='Ensemble Curve',
-                                line=dict(color='magenta',
-                                          width=2, dash='dot'),
-                                marker=dict(size=6, symbol='diamond')
-                            ))
-                        elif ens.get('predicted_price', 0) > 0:
-                            pred_time_ens = last_time + pd.Timedelta(minutes=3)
-                            fig_ohlc.add_trace(go.Scatter(
-                                x=[last_time, pred_time_ens],
-                                y=[last_price, ens['predicted_price']],
-                                mode='lines+markers',
-                                name='Ensemble',
-                                line=dict(color='magenta',
-                                          width=2, dash='dot'),
-                                marker=dict(size=8, symbol='diamond')
-                            ))
-
-                    fig_ohlc.update_layout(
-                        title="Real-time BTC Candles & Dual AI Predictions",
-                        xaxis_rangeslider_visible=False,
-                        template="plotly_dark",
-                        height=500
-                    )
-                    st.plotly_chart(fig_ohlc, width='stretch')
-                else:
-                    st.info("Esperando primer micro-batch de datos OHLC...")
-
-            with accuracy_col:
-                # -- Panel de Precision Dual --
-                st.markdown("### Model Accuracy")
-                comparison = fetch_model_comparison()
-                acc = fetch_prediction_accuracy()
-
-                # Show primary model gauge (backward-compatible)
-                if acc and acc.get("total_evaluated", 0) > 0:
-                    dir_acc = acc.get("direction_accuracy", 0)
-                    fig_acc = go.Figure(go.Indicator(
-                        mode="gauge+number",
-                        value=dir_acc,
-                        domain={'x': [0, 1], 'y': [0, 1]},
-                        title={'text': "Primary Direction %"},
-                        number={'suffix': "%"},
-                        gauge={
-                            'axis': {'range': [0, 100]},
-                            'bar': {'color': "cyan"},
-                            'steps': [
-                                {'range': [0, 40], 'color': "darkred"},
-                                {'range': [40, 55], 'color': "orange"},
-                                {'range': [55, 70], 'color': "gold"},
-                                {'range': [70, 100], 'color': "green"}
-                            ],
-                        }
-                    ))
-                    fig_acc.update_layout(
-                        template="plotly_dark",
-                        height=200,
-                        margin=dict(l=20, r=20, t=40, b=20)
-                    )
-                    st.plotly_chart(fig_acc, width='stretch')
-
-                # Dual model comparison table
-                if comparison:
-                    leg_acc = comparison.get("legacy")
-                    ens_acc = comparison.get("ensemble")
-
-                    if leg_acc or ens_acc:
-                        st.markdown("**Model Comparison**")
-                        comp_data = []
-                        if leg_acc and leg_acc.get("total_evaluated", 0) > 0:
-                            comp_data.append({
-                                "Model": "Legacy TFT",
-                                "Dir %": f"{leg_acc.get('direction_accuracy', 0):.1f}%",
-                                "MAE": f"${leg_acc.get('mae', 0):,.0f}",
-                                "Evals": leg_acc.get("total_evaluated", 0),
-                            })
-                        if ens_acc and ens_acc.get("total_evaluated", 0) > 0:
-                            comp_data.append({
-                                "Model": "Ensemble",
-                                "Dir %": f"{ens_acc.get('direction_accuracy', 0):.1f}%",
-                                "MAE": f"${ens_acc.get('mae', 0):,.0f}",
-                                "Evals": ens_acc.get("total_evaluated", 0),
-                            })
-                        if comp_data:
-                            st.dataframe(pd.DataFrame(comp_data),
-                                         hide_index=True,
-                                         width='stretch')
-                elif acc and acc.get("total_evaluated", 0) > 0:
-                    st.metric("MAE", f"${acc.get('mae', 0):,.2f}")
-                    st.metric("Evaluaciones",
-                              f"{acc.get('total_evaluated', 0)}")
-
-                if not acc or acc.get("total_evaluated", 0) == 0:
-                    st.info("Recopilando datos de precision...")
-                    st.caption(
-                        "Las metricas apareceran tras ~2 min de predicciones")
+            # -- Layout: Chart + Accuracy (auto-refreshing fragment) --
+            realtime_chart_panel()
 
         st.subheader("🌍 All Assets Market Overview")
         df = pd.DataFrame(overview_data)
@@ -492,9 +552,11 @@ elif page == "Price Charts":
                 fig_candlestick.update_layout(
                     template="plotly_dark",
                     xaxis_rangeslider_visible=True,
-                    height=500
+                    height=500,
+                    uirevision='detail-candlestick',
                 )
-                st.plotly_chart(fig_candlestick, width='stretch')
+                st.plotly_chart(fig_candlestick, width='stretch',
+                                key='detail_candle')
             else:
                 st.info(
                     f"No hay datos de velas en tiempo real para {selected_coin} todavía.")
@@ -507,7 +569,8 @@ elif page == "Price Charts":
                 df_hist["price_date"] = pd.to_datetime(df_hist["price_date"])
 
                 fig_line = px.line(df_hist, x="price_date", y="price_usd")
-                fig_line.update_layout(template="plotly_dark")
+                fig_line.update_layout(template="plotly_dark",
+                                       uirevision='history-line')
                 st.plotly_chart(fig_line, width='stretch')
 
                 # 3. Data Table
@@ -563,8 +626,10 @@ elif page == "Coin Comparison":
                         template="plotly_dark",
                         yaxis_title="Normalized Price (Base 100)",
                         height=450,
+                        uirevision='comparison-chart',
                     )
-                    st.plotly_chart(fig_comp, width='stretch')
+                    st.plotly_chart(fig_comp, width='stretch',
+                                    key='comparison_chart')
 
                 # Side-by-side metrics
                 st.subheader("📋 Comparative Metrics")
@@ -613,6 +678,7 @@ elif page == "Coin Comparison":
                             barmode='group',
                             yaxis_title="Volume (USD)",
                             height=350,
+                            uirevision='volume-comparison',
                         )
                         st.plotly_chart(fig_vol, width='stretch')
             else:

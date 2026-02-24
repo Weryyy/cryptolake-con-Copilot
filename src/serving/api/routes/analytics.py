@@ -199,6 +199,34 @@ async def get_model_comparison():
     )
 
 
+@router.get("/analytics/prediction-history/{model}")
+async def get_prediction_history(model: str = "ensemble", limit: int = 100):
+    """Historial de predicciones pasadas para graficar en el dashboard.
+
+    Retorna las ultimas N predicciones con timestamp, precio predicho
+    y precio real al momento de la prediccion.
+    """
+    redis = get_redis_client()
+    key = f"prediction_history_{model}"
+    raw_entries = redis.lrange(key, 0, min(limit - 1, 499))
+    results = []
+    for entry_raw in raw_entries:
+        try:
+            entry = json.loads(entry_raw)
+            results.append({
+                "timestamp": entry.get("timestamp", 0),
+                "predicted_price": entry.get("predicted_price", 0),
+                "current_price": entry.get("current_price", 0),
+                "confidence": entry.get("confidence", 0),
+                "sentiment_bias": entry.get("sentiment_bias", ""),
+            })
+        except Exception:
+            continue
+    # Invertir para orden cronologico (Redis LPUSH = mas reciente primero)
+    results.reverse()
+    return results
+
+
 @router.get("/analytics/market-overview", response_model=list[MarketOverview])
 async def get_market_overview():
     """Overview del mercado crypto con últimos precios y cambios.

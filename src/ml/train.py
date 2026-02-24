@@ -135,6 +135,78 @@ def get_fear_greed_value():
     return 50  # neutral
 
 
+def load_coingecko_hourly(coin_id="bitcoin", days=30):
+    """Fetch datos hourly directamente de CoinGecko API (gratis).
+
+    CoinGecko gratis da ~720 puntos hourly para 30 dias.
+    Esto triplica nuestros datos de entrenamiento sin coste.
+
+    Args:
+        coin_id: ID de la moneda en CoinGecko.
+        days: dias de historia (max 90 para hourly en tier gratis).
+
+    Returns:
+        DataFrame con [timestamp, price_usd, volume_usd, coin_id] o None.
+    """
+    import requests
+    try:
+        print(f"   [API] Fetching CoinGecko hourly {coin_id} ({days}d)...")
+        resp = requests.get(
+            f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart",
+            params={"vs_currency": "usd", "days": str(days)},
+            timeout=30,
+        )
+        if resp.status_code == 429:
+            print(f"   [WARN] CoinGecko rate limit, skipping {coin_id}")
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+        prices = data.get("prices", [])
+        volumes = data.get("total_volumes", [])
+        if len(prices) < 10:
+            return None
+
+        records = []
+        for i, (ts_ms, price) in enumerate(prices):
+            vol = volumes[i][1] if i < len(volumes) else 0.0
+            records.append({
+                "timestamp": pd.Timestamp(ts_ms, unit="ms", tz="UTC"),
+                "price_usd": float(price),
+                "volume_usd": float(vol),
+                "coin_id": coin_id,
+            })
+        df = pd.DataFrame(records)
+        print(f"   [OK] CoinGecko {coin_id}: {len(df)} hourly points")
+        return df
+    except Exception as e:
+        print(f"   [WARN] CoinGecko {coin_id} fetch failed: {e}")
+        return None
+
+
+def load_multicoin_realtime(coins=None):
+    """Carga datos realtime de TODAS las coins disponibles en Iceberg.
+
+    Los features (RSI, MACD, Bollinger, returns, volatility) son
+    ratio-based y agnósticos de precio → los patrones de ETH, SOL, etc.
+    son transferibles a BTC.
+
+    Returns:
+        dict {coin_id: DataFrame} con datos de cada coin.
+    """
+    if coins is None:
+        coins = [
+            "bitcoin", "ethereum", "solana",
+            "cardano", "chainlink", "polkadot", "avalanche-2",
+        ]
+    results = {}
+    for coin_id in coins:
+        df = load_realtime_data(coin_id)
+        if df is not None and len(df) >= 30:
+            results[coin_id] = df
+            print(f"   [OK] {coin_id}: {len(df)} candles (30s)")
+    return results
+
+
 # ──────────────────────────────────────────────────────────────
 # Entrenamiento del ensemble
 # ──────────────────────────────────────────────────────────────
@@ -156,7 +228,7 @@ def train_ensemble():
     torch.set_num_threads(n_threads)
 
     print("=" * 60)
-    print("[TRAIN] ENTRENAMIENTO ENSEMBLE v2 -- Multi-Modelo + 20 Features")
+    print("[TRAIN] ENTRENAMIENTO ENSEMBLE v3 -- Multi-Coin + CoinGecko")
     print("=" * 60)
     print(f"   CPU: Intel Xeon E5-1620 v3 (4C/8T)")
     print(f"   Threads: {n_threads}")
@@ -164,93 +236,137 @@ def train_ensemble():
     print(f"   Features: {N_FEATURES} ({', '.join(FEATURE_NAMES[:5])}...)")
     print("=" * 60)
 
-    # -- 1. Cargar datos --
-    print("\n[DATA] Cargando datos realtime (30s candles, maximo disponible)...")
-    # sin filtro de horas = todos los datos
-    df_rt = load_realtime_data("bitcoin")
-
-    print("[DATA] Cargando datos diarios (macro context)...")
-    df_daily = load_daily_data("bitcoin")
-
-    # Combinar datos: resamplear 30s→2min + concatenar con daily
-    frames = []
-    data_source = "combined"
-
-    if df_rt is not None and len(df_rt) >= 20:
-        # Resamplear 30s a 1 minuto para reducir ruido pero mantener muestras
-        df_rt_resampled = df_rt.copy()
-        df_rt_resampled = df_rt_resampled.set_index("timestamp")
-        df_rt_resampled = df_rt_resampled.resample("1min").agg({
-            "price_usd": "last",
-            "volume_usd": "sum",
-            "coin_id": "first",
-        }).dropna().reset_index()
-        print(
-            f"   \u2705 Realtime: {len(df_rt)} \u2192 {len(df_rt_resampled)} candles (1min)")
-        frames.append(df_rt_resampled)
-
-    if df_daily is not None and len(df_daily) >= 10:
-        print(f"   [OK] Daily: {len(df_daily)} registros")
-        frames.append(df_daily)
-
-    if not frames:
-        total_rt = len(df_rt) if df_rt is not None else 0
-        total_d = len(df_daily) if df_daily is not None else 0
-        print(
-            f"   [ERROR] Datos insuficientes (realtime={total_rt}, daily={total_d})")
-        print("   -> Necesitas al menos 20 candles de 30s o 10 diarios.")
-        return
-
-    if len(frames) > 1:
-        for f in frames:
-            f["timestamp"] = pd.to_datetime(f["timestamp"], utc=True)
-        df = pd.concat(frames, ignore_index=True)
-        df = df.sort_values("timestamp").reset_index(drop=True)
-        df = df.drop_duplicates(subset=["timestamp"], keep="last")
-    else:
-        df = frames[0]
-        data_source = "realtime_2min" if df_rt is not None and len(
-            df_rt) >= 20 else "daily"
-
-    # Fear & Greed value
+    # -- 1. Cargar datos de MULTIPLES fuentes --
     fg_val = get_fear_greed_value()
-    print(f"   Fear & Greed: {fg_val}")
+    print(f"\n   Fear & Greed: {fg_val}")
 
-    prices = df["price_usd"].values
-    volumes = df["volume_usd"].fillna(0).values
-    timestamps = df["timestamp"].values if "timestamp" in df.columns else None
+    # ── 1a. Datos realtime de TODAS las coins (30s candles) ──
+    print("\n[DATA-1] Cargando realtime multi-coin (30s candles)...")
+    multicoin_data = load_multicoin_realtime()
 
-    print(f"   Rango: ${prices.min():,.2f} — ${prices.max():,.2f}")
-    print(f"   Registros: {len(prices)}")
+    # ── 1b. Datos hourly de CoinGecko API (gratis, ~720 pts/coin) ──
+    print("\n[DATA-2] Cargando CoinGecko hourly (30 dias)...")
+    cg_coins = ["bitcoin", "ethereum", "solana"]
+    coingecko_frames = []
+    for cg_coin in cg_coins:
+        import time as _t
+        _t.sleep(2.5)  # rate limit CoinGecko gratis: 30 calls/min
+        df_cg = load_coingecko_hourly(cg_coin, days=30)
+        if df_cg is not None:
+            coingecko_frames.append(df_cg)
 
-    # -- 2. Feature engineering --
-    print("\n[FEAT] Construyendo features (20 dimensiones)...")
-    lookback = 30  # warmup para que features sean estables
-    seq_len = 10   # ventana LSTM (10 pasos x 20 features)
+    # ── 1c. Datos diarios de Iceberg ──
+    print("\n[DATA-3] Cargando datos diarios (macro context)...")
+    df_daily = load_daily_data("bitcoin")
+    if df_daily is not None and len(df_daily) >= 10:
+        print(f"   [OK] Daily BTC: {len(df_daily)} registros")
 
-    # Features para modelos tabulares (GB + RF)
-    X_tab, y_dir, y_ret = build_training_samples(
-        prices, volumes, timestamps, fg_val, lookback=lookback,
-    )
-    if X_tab is None or len(X_tab) < 20:
-        print(
-            f"   [ERROR] Muy pocas muestras tabulares ({0 if X_tab is None else len(X_tab)})")
+    # ── 2. Construir samples combinados de TODAS las fuentes ──
+    # Estrategia: cada fuente genera sus propias features y targets.
+    # Los features son ratio-based (returns, RSI, MACD, etc.) así que
+    # patrones de ETH a $2k son transferibles a BTC a $64k.
+    print("\n[FEAT] Construyendo features combinadas multi-fuente...")
+    lookback = 30
+    seq_len = 10
+    target_horizon = 3
+
+    all_X_tab = []
+    all_y_dir = []
+    all_y_ret = []
+    all_X_seq = []
+    all_y_dir_seq = []
+    all_y_ret_seq = []
+    source_stats = {}
+
+    def _add_samples(prices, volumes, timestamps, source_name):
+        """Extrae features y targets de una serie de precios."""
+        X_t, y_d, y_r = build_training_samples(
+            prices, volumes, timestamps, fg_val,
+            lookback=lookback, target_horizon=target_horizon,
+        )
+        n_tab = 0
+        n_seq = 0
+        if X_t is not None and len(X_t) >= 5:
+            all_X_tab.append(X_t)
+            all_y_dir.append(y_d)
+            all_y_ret.append(y_r)
+            n_tab = len(X_t)
+
+        X_s, y_ds, y_rs = build_sequence_samples(
+            prices, volumes, timestamps, fg_val,
+            lookback=lookback, seq_len=seq_len,
+            target_horizon=target_horizon,
+        )
+        if X_s is not None and len(X_s) >= 5:
+            all_X_seq.append(X_s)
+            all_y_dir_seq.append(y_ds)
+            all_y_ret_seq.append(y_rs)
+            n_seq = len(X_s)
+        source_stats[source_name] = {"tab": n_tab, "seq": n_seq}
+
+    # Realtime multi-coin
+    for coin_id, df_coin in multicoin_data.items():
+        p = df_coin["price_usd"].values
+        v = df_coin["volume_usd"].fillna(0).values
+        ts = df_coin["timestamp"].values
+        _add_samples(p, v, ts, f"rt_{coin_id}")
+
+    # CoinGecko hourly
+    for df_cg in coingecko_frames:
+        coin_id = df_cg["coin_id"].iloc[0]
+        p = df_cg["price_usd"].values
+        v = df_cg["volume_usd"].fillna(0).values
+        ts = df_cg["timestamp"].values
+        _add_samples(p, v, ts, f"cg_{coin_id}")
+
+    # Daily data
+    if df_daily is not None and len(df_daily) >= lookback + target_horizon + 5:
+        p = df_daily["price_usd"].values
+        v = df_daily["volume_usd"].fillna(0).values
+        ts = df_daily["timestamp"].values
+        _add_samples(p, v, ts, "daily_btc")
+
+    # Concatenar todo
+    if not all_X_tab:
+        print("   [ERROR] No se generaron muestras de ninguna fuente")
         return
 
-    # Features para LSTM
-    X_seq, y_dir_seq, y_ret_seq = build_sequence_samples(
-        prices, volumes, timestamps, fg_val,
-        lookback=lookback, seq_len=seq_len,
-    )
-    has_lstm_data = X_seq is not None and len(X_seq) >= 20
+    X_tab = np.concatenate(all_X_tab, axis=0)
+    y_dir = np.concatenate(all_y_dir, axis=0)
+    y_ret = np.concatenate(all_y_ret, axis=0)
 
-    print(f"   Muestras tabulares: {len(X_tab)}")
+    has_lstm_data = len(all_X_seq) > 0
+    if has_lstm_data:
+        X_seq = np.concatenate(all_X_seq, axis=0)
+        y_dir_seq = np.concatenate(all_y_dir_seq, axis=0)
+        y_ret_seq = np.concatenate(all_y_ret_seq, axis=0)
+    else:
+        X_seq = y_dir_seq = y_ret_seq = None
+
+    print(f"\n   {'Source':<25} {'Tabular':>8} {'Sequence':>8}")
+    print(f"   {'─'*25} {'─'*8} {'─'*8}")
+    for src, stats in sorted(source_stats.items()):
+        print(f"   {src:<25} {stats['tab']:>8} {stats['seq']:>8}")
+    print(f"   {'─'*25} {'─'*8} {'─'*8}")
+    print(f"   {'TOTAL':<25} {len(X_tab):>8} "
+          f"{len(X_seq) if has_lstm_data else 0:>8}")
+    print(f"   Target horizon: {target_horizon} pasos")
+    print(f"   Distribution: {y_dir.mean():.1%} UP / {1-y_dir.mean():.1%} DN")
+
     if has_lstm_data:
         print(f"   Muestras secuenciales: {len(X_seq)}")
     else:
         print(f"   [WARN] No hay suficientes datos para LSTM, solo entrena GB+RF")
 
     # -- 3. Split cronologico (walk-forward) --
+    # NOTA: con multi-coin, los datos están mezclados. Shuffle para
+    # distribuir coins uniformemente entre train/val.
+    rng = np.random.RandomState(42)
+    idx = rng.permutation(len(X_tab))
+    X_tab = X_tab[idx]
+    y_dir = y_dir[idx]
+    y_ret = y_ret[idx]
+
     split = int(len(X_tab) * 0.80)
     X_train, X_val = X_tab[:split], X_tab[split:]
     y_dir_train, y_dir_val = y_dir[:split], y_dir[split:]
@@ -272,18 +388,27 @@ def train_ensemble():
 
     # Regularización fuerte para evitar overfitting con pocos datos
     n_samples = len(X_train)
+
+    # Calcular sample_weight para balancear clases (GB no tiene class_weight)
+    n_up = (y_dir_train == 1).sum()
+    n_down = (y_dir_train == 0).sum()
+    w_up = len(y_dir_train) / (2.0 * max(n_up, 1))
+    w_down = len(y_dir_train) / (2.0 * max(n_down, 1))
+    sample_weights = np.where(y_dir_train == 1, w_up, w_down)
+    print(f"   Class weights: UP={w_up:.2f}, DOWN={w_down:.2f}")
+
     gb = GradientBoostingClassifier(
         n_estimators=min(200, max(50, n_samples // 3)),
-        max_depth=3,           # un poco mas profundo para captar patrones
-        learning_rate=0.05,    # menor LR + mas arboles = mejor generalizacion
-        subsample=0.8,         # bootstrap de datos
+        max_depth=3,
+        learning_rate=0.05,
+        subsample=0.8,
         min_samples_leaf=max(5, n_samples // 50),
-        max_features=0.7,      # mas features por split
-        validation_fraction=0.15,  # early stopping interno
+        max_features=0.7,
+        validation_fraction=0.15,
         n_iter_no_change=15,
         random_state=42,
     )
-    gb.fit(X_train, y_dir_train)
+    gb.fit(X_train, y_dir_train, sample_weight=sample_weights)
 
     gb_train_acc = accuracy_score(y_dir_train, gb.predict(X_train))
     gb_val_acc = accuracy_score(y_dir_val, gb.predict(X_val))
@@ -343,6 +468,12 @@ def train_ensemble():
         print("[LSTM] Entrenando ReturnLSTM (20 features x 10 steps)...")
         start = time.time()
 
+        # Shuffle para mezclar coins uniformemente
+        idx_seq = rng.permutation(len(X_seq))
+        X_seq = X_seq[idx_seq]
+        y_dir_seq = y_dir_seq[idx_seq]
+        y_ret_seq = y_ret_seq[idx_seq]
+
         split_seq = int(len(X_seq) * 0.80)
         X_seq_train = torch.tensor(X_seq[:split_seq]).to(device)
         X_seq_val = torch.tensor(X_seq[split_seq:]).to(device)
@@ -371,8 +502,8 @@ def train_ensemble():
             optimizer, mode="min", factor=0.5, patience=15,
         )
 
-        # Mini-batches
-        batch_size = min(64, len(X_seq_train))
+        # Mini-batches (mas grande con multi-coin data)
+        batch_size = min(128, len(X_seq_train))
         dataset = TensorDataset(X_seq_train, y_ret_seq_train, y_dir_seq_train)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
@@ -555,12 +686,14 @@ def train_ensemble():
 
     # -- 8. Guardar configuracion del ensemble --
     config = {
-        "version": 2,
-        "data_source": data_source,
+        "version": 3,
+        "data_source": "multicoin+coingecko",
+        "n_training_samples": int(len(X_tab)),
         "n_features": N_FEATURES,
         "feature_names": FEATURE_NAMES,
         "seq_len": seq_len,
         "lookback": lookback,
+        "target_horizon": target_horizon,
         "weights": {"gb": w_gb, "rf": w_rf, "lstm": w_lstm},
         "confidence_threshold": best_threshold,
         "validation_results": {

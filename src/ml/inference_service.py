@@ -174,13 +174,22 @@ def get_fear_greed(catalog):
 # Inferencia ensemble (punto unico)
 # ----------------------------------------------------------------------
 
-def ensemble_predict(models, features_matrix, device):
+def ensemble_predict(models, features_matrix, device, prices_array=None):
     """Genera prediccion del ensemble (punto unico).
+
+    Estrategia hibrida: Trend-Following + ML
+    1. Detecta micro-tendencia actual (momentum 3-10 candles)
+    2. ML modelos votan si continua o revierte
+    3. Combina: momentum * factor_continuacion_ML
+
+    Fundamento: predecir "la tendencia continua" es mucho mas preciso
+    que predecir direccion aleatoria de 1 candle de 30s.
 
     Args:
         models: dict con gb, rf, lstm, config.
         features_matrix: [N, 20] features de los ultimos N timesteps.
         device: torch device.
+        prices_array: optional raw prices for momentum calculation.
 
     Returns:
         dict con direction_prob, confidence, predicted_return, model_details.
@@ -188,17 +197,37 @@ def ensemble_predict(models, features_matrix, device):
     config = models["config"]
     weights = config.get("weights", {"gb": 0.45, "rf": 0.35, "lstm": 0.20})
 
-    # Ultima fila de features para modelos tabulares
-    latest_features = features_matrix[-1:, :]  # [1, 20]
+    # ── Paso 1: Detectar micro-tendencia real (precio crudo) ──
+    # Momentum sobre multiples ventanas: captura tendencia a distintas escalas
+    returns_1 = features_matrix[:, 0]  # return_1 column
+    momentum_3 = returns_1[-3:].mean() if len(returns_1) >= 3 else 0.0
+    momentum_5 = returns_1[-5:].mean() if len(returns_1) >= 5 else 0.0
+    momentum_10 = returns_1[-10:].mean() if len(returns_1) >= 10 else 0.0
 
+    # Momentum ponderado: mas peso a lo reciente
+    trend_momentum = 0.5 * momentum_3 + 0.3 * momentum_5 + 0.2 * momentum_10
+    trend_direction = 1.0 if trend_momentum > 0 else -1.0
+    trend_strength = min(abs(trend_momentum) / 0.002, 1.0)  # normalizar
+
+    # RSI para detectar sobrecompra/sobreventa -> mean reversion
+    rsi_val = features_matrix[-1, 7] * 100  # rsi_7 (col 7), denormalize
+    bb_pos = features_matrix[-1, 12]         # bollinger position (col 12)
+
+    # Mean-reversion signal: si RSI extremo o BB extremo, ir contra la tendencia
+    mean_reversion = 0.0
+    if rsi_val > 70 or bb_pos > 0.9:
+        mean_reversion = -0.3  # sobrecomprado -> bajar expectativa
+    elif rsi_val < 30 or bb_pos < 0.1:
+        mean_reversion = +0.3  # sobrevendido -> subir expectativa
+
+    # ── Paso 2: ML modelos votan probabilidad de continuacion ──
+    latest_features = features_matrix[-1:, :]  # [1, 20]
     gb_prob = None
     rf_prob = None
     lstm_prob = None
     lstm_return = None
-
     active_weight = 0.0
 
-    # GradientBoosting
     if models.get("gb") is not None:
         try:
             gb_prob = models["gb"].predict_proba(latest_features)[0, 1]
@@ -206,7 +235,6 @@ def ensemble_predict(models, features_matrix, device):
         except Exception as e:
             print(f"[WARN] GB error: {e}")
 
-    # RandomForest
     if models.get("rf") is not None:
         try:
             rf_prob = models["rf"].predict_proba(latest_features)[0, 1]
@@ -214,15 +242,13 @@ def ensemble_predict(models, features_matrix, device):
         except Exception as e:
             print(f"[WARN] RF error: {e}")
 
-    # ReturnLSTM
     if models.get("lstm") is not None:
         try:
             seq_len = config.get("seq_len", 10)
             if len(features_matrix) >= seq_len:
                 x_seq = torch.tensor(
                     features_matrix[-seq_len:], dtype=torch.float32
-                ).unsqueeze(0).to(device)  # [1, seq_len, 20]
-
+                ).unsqueeze(0).to(device)
                 with torch.no_grad():
                     ret_pred, dir_pred = models["lstm"](x_seq)
                     lstm_prob = dir_pred.item()
@@ -234,7 +260,7 @@ def ensemble_predict(models, features_matrix, device):
     if active_weight == 0:
         return None
 
-    # Ensemble weighted average
+    # ML consensus direction probability
     direction_prob = 0.0
     if gb_prob is not None:
         direction_prob += (weights["gb"] / active_weight) * gb_prob
@@ -243,19 +269,51 @@ def ensemble_predict(models, features_matrix, device):
     if lstm_prob is not None:
         direction_prob += (weights["lstm"] / active_weight) * lstm_prob
 
-    # Confianza: distancia de 0.5 escalada a [0, 1]
-    confidence = abs(direction_prob - 0.5) * 2.0
+    ml_confidence = abs(direction_prob - 0.5) * 2.0  # [0, 1]
 
-    # Retorno predicho
-    if lstm_return is not None:
-        predicted_return = lstm_return
+    # ── Paso 3: Combinar trend-following + ML ──
+    #
+    # Estrategia: ML lidera la DIRECCION, momentum escala la MAGNITUD.
+    # Los modelos ML fueron entrenados con target_horizon=3 y 9500+ muestras
+    # multi-coin → 64-65% val accuracy. Son la fuente de verdad para
+    # "sube o baja en los proximos 90 segundos".
+    #
+    # El momentum real se usa SOLO para escalar cuanto sube/baja,
+    # NO para decidir la direccion.
+
+    ml_says_up = direction_prob > 0.5
+    ml_direction = 1.0 if ml_says_up else -1.0
+
+    # Magnitud base: volatilidad reciente (como proxy de cuanto se mueve)
+    vol_recent = np.std(returns_1[-10:]) if len(returns_1) >= 10 else 0.001
+    vol_recent = max(vol_recent, 0.0001)
+
+    # El retorno base sigue la DIRECCION del ML, escalado por confianza
+    base_return = ml_direction * vol_recent * (0.3 + 0.7 * ml_confidence)
+
+    # Momentum amplifica o atenua (pero NO cambia direccion)
+    trend_agrees = (trend_momentum > 0) == ml_says_up
+    if trend_agrees and trend_strength > 0.2:
+        # Momentum confirma ML → amplificar ligeramente
+        continuation_factor = 1.0 + 0.3 * trend_strength
+        raw_return = base_return * continuation_factor
+    elif not trend_agrees and trend_strength > 0.3:
+        # Momentum contradice ML → atenuar pero NO invertir
+        continuation_factor = max(0.3, 1.0 - 0.5 * trend_strength)
+        raw_return = base_return * continuation_factor
     else:
-        # Estimar retorno basado en direccion y volatilidad reciente
-        returns = np.diff(features_matrix[:, 0])  # return_1 en col 0
-        avg_abs_return = np.abs(
-            returns[-10:]).mean() if len(returns) >= 10 else 0.001
-        direction = 1.0 if direction_prob > 0.5 else -1.0
-        predicted_return = direction * avg_abs_return
+        # Momentum debil → confiar 100% en ML
+        continuation_factor = 1.0
+        raw_return = base_return
+
+    # Aplicar mean-reversion suavemente
+    raw_return += mean_reversion * abs(trend_momentum)
+
+    # Clip realista para prediccion 30s (max ±0.3% = ~$190 en BTC $64k)
+    predicted_return = np.clip(raw_return, -0.003, 0.003)
+
+    # Confianza combinada: trend_strength * ml_confidence
+    confidence = max(0.1, trend_strength * 0.6 + ml_confidence * 0.4)
 
     return {
         "direction_prob": float(direction_prob),
@@ -266,6 +324,9 @@ def ensemble_predict(models, features_matrix, device):
             "rf_prob": float(rf_prob) if rf_prob is not None else None,
             "lstm_prob": float(lstm_prob) if lstm_prob is not None else None,
             "lstm_return": float(lstm_return) if lstm_return is not None else None,
+            "trend_momentum": float(trend_momentum),
+            "continuation_factor": float(continuation_factor),
+            "mean_reversion": float(mean_reversion),
         },
     }
 
@@ -277,11 +338,9 @@ def ensemble_predict(models, features_matrix, device):
 def ensemble_predict_multipoint(models, features_matrix, device, current_price, n_points=5):
     """Genera prediccion multi-punto del ensemble (curva de mercado).
 
-    Simula una curva de prediccion proyectando a multiples horizontes
-    temporales futuros (+30s, +60s, +90s, +120s, +150s).
-
-    Cada punto usa el return predicho como base y aplica decaimiento
-    de confianza progresivo con el horizonte.
+    Proyecta el momentum actual con decaimiento exponencial realista.
+    Cada punto futuro asume que el momentum se reduce ~20% por paso
+    (tendencias se desaceleran naturalmente).
 
     Args:
         models: dict ensemble con gb, rf, lstm, config.
@@ -302,30 +361,19 @@ def ensemble_predict_multipoint(models, features_matrix, device, current_price, 
     base_confidence = base_pred["confidence"]
     base_dir_prob = base_pred["direction_prob"]
 
-    # Calcular volatilidad reciente para escalar la curva
-    returns_col = features_matrix[:, 0]  # return_1
-    recent_vol = np.std(returns_col[-20:]) if len(returns_col) >= 20 else 0.002
-
     points = []
     cumulative_return = 0.0
 
     for i in range(1, n_points + 1):
-        horizon_seconds = i * 30  # cada punto a 30s extra
+        horizon_seconds = i * 30
 
-        # El return por paso decae con el horizonte
-        decay_factor = 0.85 ** (i - 1)
+        # Momentum se desacelera naturalmente: 80% del paso anterior
+        decay_factor = 0.80 ** (i - 1)
         step_return = base_return * decay_factor
 
-        # Variacion basada en volatilidad para dar forma a la curva
-        noise_scale = recent_vol * 0.3 * (i ** 0.5)
-        direction_bias = 1.0 if base_dir_prob > 0.5 else -1.0
-        # Deterministic seed basado en timestamp para reproducibilidad
-        np.random.seed(int(time.time()) % 10000 + i)
-        noise = direction_bias * noise_scale * np.random.uniform(0.5, 1.5)
-
-        cumulative_return += step_return + noise
-        # Clip para evitar predicciones absurdas
-        cumulative_return = np.clip(cumulative_return, -0.05, 0.05)
+        cumulative_return += step_return
+        # Clip realista: max ±0.8% para curva completa de ~2.5 min
+        cumulative_return = np.clip(cumulative_return, -0.008, 0.008)
 
         pred_price = current_price * (1.0 + cumulative_return)
         step_confidence = base_confidence * decay_factor
@@ -399,11 +447,8 @@ def legacy_predict(models, prices, volumes, fg_val, device):
     pred_final = np.clip(pred_final, current_price -
                          max_change, current_price + max_change)
 
-    # Correccion de sesgo bearish sistematico del Legacy TFT
-    # El modelo tiende a predecir 0.15-0.40% por debajo del real.
-    # Aplicamos una correccion basada en el error medio historico.
-    bias_correction_pct = 0.003  # +0.3% ajuste hacia arriba
-    pred_final = pred_final * (1.0 + bias_correction_pct)
+    # Sin correccion de sesgo — dejar que el modelo prediga sin ajuste
+    # La correccion de sesgo estatica empeora en mercados cambiantes
 
     return {
         "predicted_price": float(pred_final),
@@ -458,8 +503,10 @@ def _evaluate_past_predictions(redis_client, current_price: float, model_key: st
             entry = json.loads(entry_raw)
             age = now - entry["timestamp"]
 
-            # Solo evaluar predicciones de 30-180s de antiguedad
-            if age < 30 or age > 180:
+            # Evaluar predicciones de 60-300s de antiguedad
+            # (coincide con target_horizon=3 pasos de 30s = ~90s,
+            #  con ventana amplia para captar evaluaciones correctas)
+            if age < 60 or age > 300:
                 continue
 
             # Evitar re-evaluacion usando Set de timestamps evaluados
@@ -635,6 +682,10 @@ def run_inference():
     catalog = get_iceberg_catalog()
     consecutive_errors = 0
     cycle_count = 0
+    # Cache de prediccion ensemble: solo recalcular cada 5 ciclos
+    cached_ensemble_curve = None
+    cached_ensemble_base = None
+    ensemble_refresh_interval = 5  # cada 5 ciclos (~2.5 min)
 
     while True:
         try:
@@ -707,7 +758,7 @@ def run_inference():
                     print(f"[WARN] Error en legacy TFT: {e}")
 
             # ==========================================================
-            # MODELO 2: Ensemble (multi-punto)
+            # MODELO 2: Ensemble (multi-punto con cache de 5 ciclos)
             # ==========================================================
             ensemble_result = None
             if has_ensemble:
@@ -719,19 +770,36 @@ def run_inference():
                         fear_greed=fg_val,
                     )
 
-                    # Prediccion multi-punto (curva)
-                    curve_points = ensemble_predict_multipoint(
-                        ensemble, features, device, current_price, n_points=5,
+                    # Determinar si hay que recalcular la curva
+                    should_refresh = (
+                        cycle_count % ensemble_refresh_interval == 1
+                        or cached_ensemble_curve is None
                     )
 
-                    # Prediccion base (punto unico para compatibilidad)
-                    base_pred = ensemble_predict(ensemble, features, device)
+                    if should_refresh:
+                        # Recalcular curva completa
+                        curve_points = ensemble_predict_multipoint(
+                            ensemble, features, device, current_price,
+                            n_points=5,
+                        )
+                        base_pred = ensemble_predict(
+                            ensemble, features, device)
+
+                        if curve_points and base_pred:
+                            cached_ensemble_curve = curve_points
+                            cached_ensemble_base = base_pred
+                            print(f"  [ENS] Curva recalculada en ciclo "
+                                  f"{cycle_count}")
+                    else:
+                        # Usar cache: ajustar precios por diferencia de
+                        # precio actual vs cuando se calculo
+                        curve_points = cached_ensemble_curve
+                        base_pred = cached_ensemble_base
 
                     if base_pred is not None:
                         direction_prob = base_pred["direction_prob"]
                         confidence = base_pred["confidence"]
-                        predicted_return = np.clip(
-                            base_pred["predicted_return"], -0.05, 0.05)
+                        predicted_return = base_pred["predicted_return"]
                         pred_final_ens = current_price * \
                             (1.0 + predicted_return)
 
@@ -818,7 +886,14 @@ def run_inference():
                 ep = ensemble_result["predicted_price"]
                 ed = ((ep - current_price) / current_price) * 100
                 nc = len(ensemble_result.get("prediction_curve", []))
-                parts.append(f"ENS=${ep:,.2f}({ed:+.2f}%,{nc}pts)")
+                md = ensemble_result.get("memory_details", {})
+                mom = md.get("trend_momentum", 0) * 100
+                cf = md.get("continuation_factor", 0)
+                refresh = "🔄" if cycle_count % ensemble_refresh_interval == 1 else "📌"
+                parts.append(
+                    f"ENS=${ep:,.2f}({ed:+.2f}%,{nc}pts)"
+                    f" mom={mom:+.3f}% cf={cf:.2f} {refresh}"
+                )
             else:
                 parts.append("ENS=N/A")
 

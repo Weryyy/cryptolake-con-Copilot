@@ -235,18 +235,24 @@ def build_feature_matrix(prices, volumes, timestamps=None, fear_greed=50):
 
 def build_training_samples(
     prices, volumes, timestamps=None, fear_greed=50, lookback=30,
+    target_horizon=3,
 ):
     """Construye muestras (X, y_direction, y_return) para modelos tabulares.
 
-    Para cada timestep t (desde lookback hasta N-1):
+    Para cada timestep t (desde lookback hasta N-target_horizon):
       X[i] = vector de 20 features al tiempo t
-      y_direction[i] = 1 si price[t+1] > price[t], 0 si no
-      y_return[i] = (price[t+1] - price[t]) / price[t]
+      y_direction[i] = 1 si price[t+horizon] > price[t], 0 si no
+      y_return[i] = (price[t+horizon] - price[t]) / price[t]
+
+    El target_horizon=3 (default) predice 3 pasos adelante (~90s con
+    candles de 30s). Esto es mucho mas predecible que 1-paso-adelante
+    porque captura micro-tendencias reales en vez de ruido.
 
     Args:
         prices, volumes, timestamps: arrays de datos crudos.
         fear_greed: valor Fear & Greed (0-100).
         lookback: periodo de warmup mínimo para que features sean estables.
+        target_horizon: pasos adelante para el target (default 3).
 
     Returns:
         X: [N, 20] matriz de features.
@@ -258,15 +264,16 @@ def build_training_samples(
     prices = np.asarray(prices, dtype=np.float64)
 
     start = max(lookback, 1)
-    end = n - 1  # necesitamos t+1 para target
+    end = n - target_horizon  # necesitamos t+horizon para target
     if end <= start:
         return None, None, None
 
     X = features[start:end]  # [N_samples, 20]
 
-    y_return = (prices[start + 1: end + 1] - prices[start: end]) / (
-        prices[start: end] + 1e-10
-    )
+    y_return = (
+        prices[start + target_horizon: end + target_horizon]
+        - prices[start: end]
+    ) / (prices[start: end] + 1e-10)
     y_direction = (y_return > 0).astype(np.float32)
 
     return X, y_direction, y_return.astype(np.float32)
@@ -274,12 +281,12 @@ def build_training_samples(
 
 def build_sequence_samples(
     prices, volumes, timestamps=None, fear_greed=50,
-    lookback=30, seq_len=10,
+    lookback=30, seq_len=10, target_horizon=3,
 ):
     """Construye muestras secuenciales para LSTM.
 
     X[i] = features[t-seq_len:t] → forma [seq_len, 20]
-    y_return[i] = retorno en tiempo t+1
+    y_return[i] = retorno en tiempo t+target_horizon
 
     Returns:
         X_seq: [N, seq_len, 20]
@@ -291,7 +298,7 @@ def build_sequence_samples(
     n = len(features)
 
     start = max(lookback, seq_len)
-    end = n - 1
+    end = n - target_horizon
 
     if end <= start:
         return None, None, None
@@ -303,7 +310,7 @@ def build_sequence_samples(
     for t in range(start, end):
         seq = features[t - seq_len: t]  # [seq_len, 20]
         X_seqs.append(seq)
-        ret = (prices[t + 1] - prices[t]) / (prices[t] + 1e-10)
+        ret = (prices[t + target_horizon] - prices[t]) / (prices[t] + 1e-10)
         y_rets.append(ret)
         y_dirs.append(1.0 if ret > 0 else 0.0)
 
