@@ -10,15 +10,14 @@ Ejecuta el pipeline completo:
 
 Schedule: Diario a las 06:00 UTC
 """
+import json
+import sys
 from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 from airflow.utils.task_group import TaskGroup
-import json
-import sys
-import os
 
 # Asegurar que el src está en el path para los workers de Airflow
 sys.path.append("/opt/airflow")
@@ -32,8 +31,9 @@ def slack_alert(context):
     print(error_msg)
 
     try:
-        from src.serving.api.utils import get_redis_client
         from datetime import datetime
+
+        from src.serving.api.utils import get_redis_client
         r = get_redis_client()
         alert = {
             "timestamp": datetime.now().timestamp(),

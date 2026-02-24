@@ -1,6 +1,5 @@
 
 from pyiceberg.catalog import load_catalog
-import pandas as pd
 
 
 def test_query():

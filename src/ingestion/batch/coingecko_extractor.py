@@ -7,8 +7,7 @@ Endpoint: /coins/{id}/market_chart para obtener price, market_cap y volume hist�
 Para ejecutar:
     python -m src.ingestion.batch.coingecko_extractor
 """
-import time
-from typing import Any, List, Dict
+from typing import Any
 
 import structlog
 
@@ -26,14 +25,14 @@ class CoinGeckoExtractor(BaseExtractor):
         self.days = days
         self.base_url = settings.coingecko_base_url
 
-    def extract(self) -> List[Dict[str, Any]]:
+    def extract(self) -> list[dict[str, Any]]:
         """
         Extrae datos históricos de todos los coins configurados.
 
         Para cada coin obtiene precios, market cap y volumen.
         Respeta rate limiting con sleep entre requests.
         """
-        all_records: List[Dict[str, Any]] = []
+        all_records: list[dict[str, Any]] = []
 
         for i, coin_id in enumerate(settings.tracked_coins):
             max_retries = 3
@@ -104,7 +103,7 @@ class CoinGeckoExtractor(BaseExtractor):
 
         return all_records
 
-    def validate(self, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def validate(self, data: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Valida que los precios sean positivos y los timestamps válidos."""
         valid = []
         invalid_count = 0
@@ -141,8 +140,8 @@ if __name__ == "__main__":
     records = extractor.run()
 
     if records:
-        coins = set(r["coin_id"] for r in records)
-        print(f"\n📊 Resumen de extracción:")
+        coins = {r["coin_id"] for r in records}
+        print("\n📊 Resumen de extracción:")
         print(f"   Total registros: {len(records)}")
         print(f"   Coins extraídos: {len(coins)}")
         for coin in sorted(coins):

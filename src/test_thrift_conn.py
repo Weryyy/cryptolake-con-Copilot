@@ -1,5 +1,6 @@
-from pyhive import hive
 import sys
+
+from pyhive import hive
 
 try:
     print("Connecting to spark-master:10001 with database='gold'...")

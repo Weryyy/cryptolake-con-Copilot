@@ -1,5 +1,7 @@
 from pyspark.sql import SparkSession
+
 from src.config.settings import settings
+
 
 def init_iceberg():
     spark = (

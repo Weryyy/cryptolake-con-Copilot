@@ -3,7 +3,8 @@ try:
 except ImportError:
     load_catalog = None
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 try:
     import redis
 except ImportError:
@@ -67,7 +68,7 @@ def make_iso_filter(column: str, operator: str, dt: datetime) -> str:
         # -> "window_start >= '2026-02-19T14:00:00+00:00'"
     """
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return f"{column} {operator} '{dt.isoformat()}'"
 
 

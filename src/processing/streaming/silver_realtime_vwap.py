@@ -4,11 +4,12 @@ Spark Structured Streaming: Bronze Realtime → Silver Aggregates (VWAP + Anomal
 Calcula VWAP y Z-Score sobre una ventana de 1 minuto para detectar anomalías.
 """
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import (
-    col, window, sum, avg, stddev,
-    when, abs, max as max_, min as min_,
-    first, last
-)
+from pyspark.sql.functions import abs as abs_
+from pyspark.sql.functions import avg, col, first, last, stddev, when, window
+from pyspark.sql.functions import max as max_
+from pyspark.sql.functions import min as min_
+from pyspark.sql.functions import sum as sum_
+
 from src.config.settings import settings
 
 
@@ -59,8 +60,8 @@ def run_vwap_job():
             window(col("timestamp"), "30 seconds")
         )
         .agg(
-            (sum("notional") / sum("quantity")).alias("vwap"),
-            sum("quantity").alias("total_volume"),
+            (sum_("notional") / sum_("quantity")).alias("vwap"),
+            sum_("quantity").alias("total_volume"),
             avg("price_usd").alias("avg_price"),
             stddev("price_usd").alias("stddev_price"),
             first("price_usd").alias("open"),
@@ -76,7 +77,7 @@ def run_vwap_job():
     enriched_df = (
         aggregated_df
         .withColumn("z_score", (col("vwap") - col("avg_price")) / col("stddev_price"))
-        .withColumn("is_anomaly", when(abs(col("z_score")) > 3, 1).otherwise(0))
+        .withColumn("is_anomaly", when(abs_(col("z_score")) > 3, 1).otherwise(0))
         .select(
             "coin_id",
             col("window.start").alias("window_start"),

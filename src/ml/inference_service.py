@@ -13,19 +13,21 @@ Publica en Redis por separado para comparacion en dashboard:
 
 Optimizado para CPU (Xeon E5-1620 v3).
 """
+import json
 import os
 import time
-import torch
-import json
+from datetime import UTC
+
 import joblib
 import numpy as np
-from src.ml.models import ReturnLSTM, get_device
+import torch
+
 from src.ml.features import (
     N_FEATURES,
     build_feature_matrix,
 )
+from src.ml.models import ReturnLSTM, get_device
 from src.serving.api.utils import get_iceberg_catalog, get_redis_client
-
 
 # ----------------------------------------------------------------------
 # Carga de modelos
@@ -89,7 +91,7 @@ def load_ensemble_models(device):
             except RuntimeError:
                 continue
         if not loaded:
-            print(f"[WARN] ReturnLSTM incompatible, requiere retrain")
+            print("[WARN] ReturnLSTM incompatible, requiere retrain")
             models["lstm"] = None
     else:
         print(f"[WARN] {lstm_path} no encontrado")
@@ -139,8 +141,8 @@ def get_btc_data(catalog, n_points=60):
     table = catalog.load_table("silver.realtime_vwap")
     table.refresh()
 
-    from datetime import datetime, timezone, timedelta
-    since = datetime.now(timezone.utc) - timedelta(hours=6)
+    from datetime import datetime, timedelta
+    since = datetime.now(UTC) - timedelta(hours=6)
     row_filter = (
         f"coin_id == 'bitcoin' AND window_start >= '{since.isoformat()}'"
     )
@@ -206,7 +208,7 @@ def ensemble_predict(models, features_matrix, device, prices_array=None):
 
     # Momentum ponderado: mas peso a lo reciente
     trend_momentum = 0.5 * momentum_3 + 0.3 * momentum_5 + 0.2 * momentum_10
-    trend_direction = 1.0 if trend_momentum > 0 else -1.0
+    _trend_direction = 1.0 if trend_momentum > 0 else -1.0
     trend_strength = min(abs(trend_momentum) / 0.002, 1.0)  # normalizar
 
     # RSI para detectar sobrecompra/sobreventa -> mean reversion

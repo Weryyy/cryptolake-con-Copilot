@@ -19,9 +19,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
-from typing import Optional
+from datetime import UTC, datetime
+from enum import StrEnum
 
 from pyspark.sql import SparkSession
 
@@ -31,7 +30,7 @@ logger = logging.getLogger(__name__)
 # ── Result models ─────────────────────────────────────────────
 
 
-class CheckStatus(str, Enum):
+class CheckStatus(StrEnum):
     PASSED = "passed"
     FAILED = "failed"
     WARNING = "warning"
@@ -46,11 +45,11 @@ class CheckResult:
     layer: str
     table_name: str
     status: CheckStatus
-    metric_value: Optional[float] = None
-    threshold: Optional[float] = None
+    metric_value: float | None = None
+    threshold: float | None = None
     message: str = ""
     checked_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+        default_factory=lambda: datetime.now(UTC).isoformat()
     )
 
     def to_dict(self) -> dict:

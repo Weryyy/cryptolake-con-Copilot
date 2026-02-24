@@ -3,17 +3,19 @@ CryptoLake Dashboard — Streamlit App
 
 Interactive dashboard for crypto market analytics.
 """
-import streamlit as st
-import requests
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import os
 import time
 from datetime import timedelta
 
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import requests
+import streamlit as st
+
 # Auto-refresh cada 30 segundos
 from streamlit_autorefresh import st_autorefresh
+
 st_autorefresh(interval=300 * 1000, key="data_refresh")
 
 # Configuration
@@ -64,7 +66,7 @@ def fetch_prediction():
         response = requests.get(
             f"{API_URL}/api/v1/analytics/prediction", timeout=15)
         return response.json()
-    except Exception as e:
+    except Exception:
         return None
 
 
@@ -139,7 +141,7 @@ def fetch_system_alerts():
         response = requests.get(
             f"{API_URL}/api/v1/analytics/system-alerts", timeout=15)
         return response.json()
-    except:
+    except Exception:
         return []
 
 
@@ -148,7 +150,7 @@ def fetch_dq_reports():
         response = requests.get(
             f"{API_URL}/api/v1/analytics/dq-reports", timeout=15)
         return response.json()
-    except:
+    except Exception:
         return []
 
 
@@ -638,7 +640,7 @@ elif page == "Coin Comparison":
 
                 mc1, mc2, mc3 = st.columns(3)
                 with mc1:
-                    st.markdown(f"**Metric**")
+                    st.markdown("**Metric**")
                     st.write("Current Price")
                     st.write("24h Change")
                     st.write("Market Cap")
@@ -698,7 +700,7 @@ elif page == "Trading Signals":
         st.markdown("### 🤖 AI Prediction")
         dual = fetch_dual_prediction()
         if dual:
-            for label, key, color_tag in [
+            for label, key, _color_tag in [
                 ("Legacy TFT", "legacy", "cyan"),
                 ("Ensemble", "ensemble", "magenta"),
             ]:
@@ -849,8 +851,8 @@ elif page == "Logs & System Status":
                 ts = alert.get('timestamp', time.time())
                 ts_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))
                 st.markdown(f"""
-                **{lvl_emoji} {lvl}** - {ts_str}  
-                `DAG: {alert.get('dag_id', 'N/A')} | Task: {alert.get('task_id', 'N/A')}`  
+                **{lvl_emoji} {lvl}** - {ts_str}
+                `DAG: {alert.get('dag_id', 'N/A')} | Task: {alert.get('task_id', 'N/A')}`
                 > {alert.get('message', 'No message')}
                 ---
                 """)

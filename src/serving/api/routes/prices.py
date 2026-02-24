@@ -1,6 +1,5 @@
 """Price endpoints."""
 from datetime import date, timedelta
-from typing import Optional
 
 from fastapi import APIRouter, Query
 
@@ -13,14 +12,8 @@ router = APIRouter(tags=["Prices"])
 @router.get("/prices/{coin_id}", response_model=list[PriceResponse])
 async def get_prices(
     coin_id: str,
-    start_date: Optional[date] = Query(
-        default=None,
-        description="Start date (default: 30 days ago)"
-    ),
-    end_date: Optional[date] = Query(
-        default=None,
-        description="End date (default: today)"
-    ),
+    start_date: date | None = None,
+    end_date: date | None = None,
     limit: int = Query(default=100, le=1000),
 ):
     """

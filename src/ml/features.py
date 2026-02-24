@@ -20,8 +20,8 @@ Hardware objetivo: Xeon E5-1620 v3, 32GB RAM, CPU-only.
 """
 import numpy as np
 import pandas as pd
-from src.ml.models import compute_rsi
 
+from src.ml.models import compute_rsi
 
 # ──────────────────────────────────────────────────────────────
 # Lista ordenada de features

@@ -11,17 +11,17 @@ Usage:
 
 from __future__ import annotations
 
-import sys
 import json
-from datetime import datetime, timezone
+import sys
+from datetime import UTC, datetime
 
 from pyspark.sql import SparkSession
 
 from src.quality.validators import (
     BronzeValidator,
-    SilverValidator,
-    GoldValidator,
     CheckResult,
+    GoldValidator,
+    SilverValidator,
 )
 
 
@@ -52,8 +52,9 @@ def persist_results(spark: SparkSession, results: list[CheckResult]):
 def publish_to_redis(results: list[CheckResult]):
     """Publish DQ summary to Redis for dashboard consumption."""
     try:
-        import redis
         import os
+
+        import redis
 
         r = redis.Redis(
             host=os.getenv("REDIS_HOST", "localhost"),
@@ -74,7 +75,7 @@ def publish_to_redis(results: list[CheckResult]):
                 "success_rate": round(passed / total, 3) if total > 0 else 0,
                 "total_expectations": total,
                 "successful_expectations": passed,
-                "timestamp": datetime.now(timezone.utc).timestamp(),
+                "timestamp": datetime.now(UTC).timestamp(),
             }
             key = f"dq_report:{table_name}"
             r.set(key, json.dumps(report))
@@ -89,7 +90,7 @@ def publish_to_redis(results: list[CheckResult]):
 def main(layer: str = "all"):
     print("=" * 60)
     print(f"CryptoLake — Data Quality Checks (layer={layer})")
-    print(f"Time: {datetime.now(timezone.utc).isoformat()}")
+    print(f"Time: {datetime.now(UTC).isoformat()}")
     print("=" * 60)
 
     spark = SparkSession.builder.appName(

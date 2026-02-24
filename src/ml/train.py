@@ -24,28 +24,29 @@ Features (20):
 
 Optimizado para: Xeon E5-1620 v3, 32GB RAM, CPU-only.
 """
+import json
+import os
+import time
+from datetime import UTC, timedelta
+
+import joblib
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
-import pandas as pd
-import numpy as np
-import time
-import os
-import json
-import joblib
-from datetime import timedelta
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report
-from src.ml.models import ReturnLSTM, get_device
-from src.ml.features import (
-    N_FEATURES,
-    FEATURE_NAMES,
-    build_training_samples,
-    build_sequence_samples,
-)
-from src.serving.api.utils import get_iceberg_catalog
+from sklearn.metrics import accuracy_score
+from torch.utils.data import DataLoader, TensorDataset
 
+from src.ml.features import (
+    FEATURE_NAMES,
+    N_FEATURES,
+    build_sequence_samples,
+    build_training_samples,
+)
+from src.ml.models import ReturnLSTM, get_device
+from src.serving.api.utils import get_iceberg_catalog
 
 # ──────────────────────────────────────────────────────────────
 # Carga de datos (velas de 30 segundos — misma que inferencia)
@@ -62,8 +63,8 @@ def load_realtime_data(coin_id="bitcoin", hours=None):
         table.refresh()
         row_filter = f"coin_id == '{coin_id}'"
         if hours:
-            from datetime import datetime, timezone
-            since = datetime.now(timezone.utc) - timedelta(hours=hours)
+            from datetime import datetime
+            since = datetime.now(UTC) - timedelta(hours=hours)
             row_filter += f" AND window_start >= '{since.isoformat()}'"
         df = table.scan(
             row_filter=row_filter,
@@ -230,7 +231,7 @@ def train_ensemble():
     print("=" * 60)
     print("[TRAIN] ENTRENAMIENTO ENSEMBLE v3 -- Multi-Coin + CoinGecko")
     print("=" * 60)
-    print(f"   CPU: Intel Xeon E5-1620 v3 (4C/8T)")
+    print("   CPU: Intel Xeon E5-1620 v3 (4C/8T)")
     print(f"   Threads: {n_threads}")
     print(f"   Device: {device}")
     print(f"   Features: {N_FEATURES} ({', '.join(FEATURE_NAMES[:5])}...)")
@@ -356,7 +357,7 @@ def train_ensemble():
     if has_lstm_data:
         print(f"   Muestras secuenciales: {len(X_seq)}")
     else:
-        print(f"   [WARN] No hay suficientes datos para LSTM, solo entrena GB+RF")
+        print("   [WARN] No hay suficientes datos para LSTM, solo entrena GB+RF")
 
     # -- 3. Split cronologico (walk-forward) --
     # NOTA: con multi-coin, los datos están mezclados. Shuffle para
@@ -370,7 +371,7 @@ def train_ensemble():
     split = int(len(X_tab) * 0.80)
     X_train, X_val = X_tab[:split], X_tab[split:]
     y_dir_train, y_dir_val = y_dir[:split], y_dir[split:]
-    y_ret_train, y_ret_val = y_ret[:split], y_ret[split:]
+    _y_ret_train, _y_ret_val = y_ret[:split], y_ret[split:]
 
     print(f"\n[SPLIT] Split: {len(X_train)} train / {len(X_val)} validation")
     print(
@@ -421,7 +422,7 @@ def train_ensemble():
 
     # Feature importance
     importances = sorted(
-        zip(FEATURE_NAMES, gb.feature_importances_),
+        zip(FEATURE_NAMES, gb.feature_importances_, strict=False),
         key=lambda x: x[1], reverse=True,
     )
     print("   Top features:")
@@ -615,7 +616,7 @@ def train_ensemble():
         # Fallback: peso uniforme si ninguno supera 50%
         w_gb, w_rf, w_lstm = 0.33, 0.33, 0.34
 
-    print(f"\n   [WEIGHTS] Pesos adaptativos basados en val accuracy:")
+    print("\n   [WEIGHTS] Pesos adaptativos basados en val accuracy:")
     print(f"     GB:   {gb_val_acc:.1%} acc -> peso {w_gb:.3f}")
     print(f"     RF:   {rf_val_acc:.1%} acc -> peso {w_rf:.3f}")
     print(f"     LSTM: {lstm_val_acc:.1%} acc -> peso {w_lstm:.3f}")
@@ -709,7 +710,7 @@ def train_ensemble():
 
     with open("models/ensemble_config.json", "w") as f:
         json.dump(config, f, indent=2)
-    print(f"\n   [OK] Configuracion guardada: models/ensemble_config.json")
+    print("\n   [OK] Configuracion guardada: models/ensemble_config.json")
 
     # -- Resumen final --
     print("\n" + "=" * 60)
@@ -718,11 +719,11 @@ def train_ensemble():
     print(f"   GradientBoosting: {gb_val_acc:.1%} val accuracy")
     print(f"   RandomForest:     {rf_val_acc:.1%} val accuracy")
     print(f"   ReturnLSTM:       {lstm_val_acc:.1%} val accuracy")
-    print(f"   ─────────────────────────────────")
+    print("   ─────────────────────────────────")
     print(f"   ENSEMBLE:         {ensemble_acc:.1%} (sin filtro)")
     print(
         f"   ENSEMBLE:         {best_filtered_acc:.1%} (con confianza >= {best_threshold})")
-    print(f"   -----------------------------------------")
+    print("   -----------------------------------------")
     if best_filtered_acc >= 0.65:
         print("   [EXCELLENT] Excelente: modelo viable para uso real")
     elif best_filtered_acc >= 0.60:
@@ -755,7 +756,7 @@ def train(mode="ensemble"):
 
 def _train_legacy(mode):
     """Entrenamiento legacy del TFT original (backward-compatible)."""
-    from src.ml.models import TemporalFusionTransformer, CouncilOfAgents, compute_sma
+    from src.ml.models import CouncilOfAgents, TemporalFusionTransformer, compute_sma
 
     device = get_device()
     n_threads = min(4, os.cpu_count() or 4)
@@ -787,7 +788,7 @@ def _train_legacy(mode):
     volumes = df["volume_usd"].fillna(0).values
 
     # Usar feature engineering original simple
-    from src.ml.models import compute_rsi, compute_sma
+    from src.ml.models import compute_rsi
     window_size = min(10, len(prices) // 3)
     rsi_period = min(14, max(3, len(prices) // 4))
     rsi = compute_rsi(prices, period=rsi_period)
@@ -837,7 +838,7 @@ def _train_legacy(mode):
     dataset = TensorDataset(X_t, Y_t, A_t)
     loader = DataLoader(dataset, batch_size=min(64, len(X_t)), shuffle=True)
 
-    for epoch in range(150):
+    for _epoch in range(150):
         model.train()
         for xb, yb, ab in loader:
             optimizer.zero_grad()

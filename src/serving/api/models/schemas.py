@@ -1,6 +1,5 @@
 """Pydantic response models for the API."""
 from datetime import date
-from typing import Optional
 
 from pydantic import BaseModel
 
@@ -9,20 +8,20 @@ class PriceResponse(BaseModel):
     coin_id: str
     price_date: date
     price_usd: float
-    market_cap_usd: Optional[float] = None
-    volume_24h_usd: Optional[float] = None
-    price_change_pct_1d: Optional[float] = None
-    moving_avg_7d: Optional[float] = None
-    moving_avg_30d: Optional[float] = None
-    ma30_signal: Optional[str] = None
+    market_cap_usd: float | None = None
+    volume_24h_usd: float | None = None
+    price_change_pct_1d: float | None = None
+    moving_avg_7d: float | None = None
+    moving_avg_30d: float | None = None
+    ma30_signal: str | None = None
 
 
 class MarketOverview(BaseModel):
     coin_id: str
     current_price: float
-    price_change_24h_pct: Optional[float] = None
-    market_cap_usd: Optional[float] = None
-    volume_24h_usd: Optional[float] = None
+    price_change_24h_pct: float | None = None
+    market_cap_usd: float | None = None
+    volume_24h_usd: float | None = None
 
 
 class FearGreedResponse(BaseModel):
@@ -43,24 +42,24 @@ class PredictionResponse(BaseModel):
     predicted_price: float
     current_price: float
     sentiment_bias: str
-    memory_details: Optional[dict] = None
-    model_version: Optional[str] = None
-    confidence: Optional[float] = None
-    direction_probability: Optional[float] = None
-    prediction_curve: Optional[list] = None
+    memory_details: dict | None = None
+    model_version: str | None = None
+    confidence: float | None = None
+    direction_probability: float | None = None
+    prediction_curve: list | None = None
 
 
 class DualPredictionResponse(BaseModel):
     """Respuesta con predicciones de ambos modelos para comparacion."""
-    legacy: Optional[PredictionResponse] = None
-    ensemble: Optional[PredictionResponse] = None
+    legacy: PredictionResponse | None = None
+    ensemble: PredictionResponse | None = None
     primary_model: str = "legacy"
 
 
 class ModelAccuracyComparison(BaseModel):
     """Precision de ambos modelos para comparacion lado a lado."""
-    legacy: Optional[dict] = None
-    ensemble: Optional[dict] = None
+    legacy: dict | None = None
+    ensemble: dict | None = None
 
 
 class OHLCResponse(BaseModel):
@@ -93,7 +92,7 @@ class FearGreedHistoryItem(BaseModel):
     value: int
     classification: str
     timestamp: int
-    date_str: Optional[str] = None
+    date_str: str | None = None
 
 
 class PredictionAccuracy(BaseModel):
@@ -103,4 +102,4 @@ class PredictionAccuracy(BaseModel):
     direction_accuracy: float = 0.0
     correct_direction: int = 0
     total_direction: int = 0
-    recent_errors: Optional[list] = None
+    recent_errors: list | None = None

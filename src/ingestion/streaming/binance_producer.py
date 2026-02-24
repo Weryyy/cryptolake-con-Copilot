@@ -12,7 +12,7 @@ import asyncio
 import json
 import signal
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 from confluent_kafka import Producer
@@ -93,7 +93,7 @@ def transform_binance_trade(raw_data: dict) -> dict:
         "quantity": float(raw_data.get("q", 0)),
         "trade_time_ms": raw_data.get("T", 0),
         "event_time_ms": raw_data.get("E", 0),
-        "ingested_at": datetime.now(timezone.utc).isoformat(),
+        "ingested_at": datetime.now(UTC).isoformat(),
         "source": "binance_websocket",
         "is_buyer_maker": raw_data.get("m", False),
     }

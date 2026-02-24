@@ -8,10 +8,9 @@ Arquitectura:
 
 Hardware objetivo: Xeon E5-1620 v3 (4C/8T), 32GB RAM, CPU-only.
 """
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-
 
 # ──────────────────────────────────────────────────────────────
 # Indicadores técnicos
@@ -144,7 +143,7 @@ class TemporalFusionTransformer(nn.Module):
     """
 
     def __init__(self, input_dim=4, agent_dim=2):
-        super(TemporalFusionTransformer, self).__init__()
+        super().__init__()
         self.lstm_long = nn.LSTM(input_dim, 48, batch_first=True, num_layers=1)
         self.lstm_short = nn.LSTM(
             input_dim, 24, batch_first=True, num_layers=1)

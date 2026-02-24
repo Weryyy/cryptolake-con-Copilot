@@ -13,14 +13,14 @@ inferencia si el entrenamiento fue exitoso.
 Schedule: Cada 6 horas (0 */6 * * *)
 """
 import json
+import os
+import sys
 import time
 from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.utils.task_group import TaskGroup
-import sys
-import os
 
 sys.path.append("/opt/airflow")
 
@@ -83,7 +83,7 @@ def trigger_retrain(mode: str = "ensemble", **kwargs):
         raise Exception(
             f"No se pudo conectar al API ({API_URL}). "
             "Verifica que el servicio 'api' este corriendo."
-        )
+        ) from None
 
 
 def wait_for_completion(mode: str = "ensemble", **kwargs):

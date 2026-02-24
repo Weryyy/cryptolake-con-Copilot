@@ -2,11 +2,24 @@
 import json
 import subprocess
 import threading
-from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, BackgroundTasks
-from src.serving.api.models.schemas import FearGreedResponse, FearGreedHistoryItem, MarketOverview, PredictionResponse, OHLCResponse, SystemAlert, DQReport, PredictionAccuracy, DualPredictionResponse, ModelAccuracyComparison
-from src.serving.api.utils import get_redis_client, load_fresh_table, make_iso_filter
+from datetime import UTC, datetime, timedelta
+
 import pyarrow.compute as pc
+from fastapi import APIRouter
+
+from src.serving.api.models.schemas import (
+    DQReport,
+    DualPredictionResponse,
+    FearGreedHistoryItem,
+    FearGreedResponse,
+    MarketOverview,
+    ModelAccuracyComparison,
+    OHLCResponse,
+    PredictionAccuracy,
+    PredictionResponse,
+    SystemAlert,
+)
+from src.serving.api.utils import get_redis_client, load_fresh_table, make_iso_filter
 
 router = APIRouter(tags=["Analytics"])
 
@@ -22,7 +35,7 @@ def _run_training(mode: str):
     redis = get_redis_client()
     redis.set("ml_retrain_status", json.dumps({
         "status": "running", "mode": mode,
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": datetime.now(UTC).isoformat(),
     }))
     try:
         result = subprocess.run(
@@ -33,7 +46,7 @@ def _run_training(mode: str):
         redis.set("ml_retrain_status", json.dumps({
             "status": "success" if success else "failed",
             "mode": mode,
-            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": datetime.now(UTC).isoformat(),
             "returncode": result.returncode,
             "stdout_tail": (result.stdout or "")[-500:],
             "stderr_tail": (result.stderr or "")[-500:],
@@ -41,12 +54,12 @@ def _run_training(mode: str):
     except subprocess.TimeoutExpired:
         redis.set("ml_retrain_status", json.dumps({
             "status": "timeout", "mode": mode,
-            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": datetime.now(UTC).isoformat(),
         }))
     except Exception as e:
         redis.set("ml_retrain_status", json.dumps({
             "status": "error", "mode": mode,
-            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": datetime.now(UTC).isoformat(),
             "error": str(e),
         }))
     finally:
@@ -220,7 +233,7 @@ async def get_prediction_history(model: str = "ensemble", limit: int = 100):
                 "confidence": entry.get("confidence", 0),
                 "sentiment_bias": entry.get("sentiment_bias", ""),
             })
-        except Exception:
+        except Exception:  # noqa: S112
             continue
     # Invertir para orden cronologico (Redis LPUSH = mas reciente primero)
     results.reverse()
@@ -353,7 +366,7 @@ async def get_realtime_ohlc(coin_id: str):
     para garantizar datos con máximo 5 minutos de lag.
     Optimizado: ambos filtros (tiempo + coin_id) se aplican en el scan.
     """
-    now_utc = datetime.now(timezone.utc)
+    now_utc = datetime.now(UTC)
     since_dt = now_utc - timedelta(hours=4)
     time_filter = make_iso_filter("window_start", ">=", since_dt)
     row_filter = f"coin_id == '{coin_id}' AND {time_filter}"

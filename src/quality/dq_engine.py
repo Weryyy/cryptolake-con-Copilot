@@ -1,9 +1,10 @@
-import os
-import pandas as pd
-import great_expectations as gx
-from src.serving.api.utils import get_iceberg_catalog, get_redis_client
 import json
+import os
 import time
+
+import great_expectations as gx
+
+from src.serving.api.utils import get_iceberg_catalog, get_redis_client
 
 
 def validate_table(table_name, suite_name):
@@ -32,7 +33,7 @@ def validate_table(table_name, suite_name):
             print(f"❌ No se encontró la suite: {suite_path}")
             return False
 
-        with open(suite_path, "r") as f:
+        with open(suite_path) as f:
             suite_dict = json.load(f)
             # Simplificamos para el PoC: Usamos Pandas para validar rápido
             # En producción usaríamos el RuntimeBatchRequest con Spark
@@ -49,20 +50,20 @@ def validate_table(table_name, suite_name):
 
         results = []
         for exp in suite_dict["expectations"]:
-            type = exp["expectation_type"]
+            exp_type = exp["expectation_type"]
             kwargs = exp["kwargs"]
 
             try:
                 # Ejecutar via Validator de GX (más robusto que manual)
-                method = getattr(validator, type)
+                method = getattr(validator, exp_type)
                 val_res = method(**kwargs)
                 results.append({
-                    "expectation": type,
+                    "expectation": exp_type,
                     "column": kwargs.get("column", "N/A"),
                     "success": val_res.success
                 })
             except Exception as e:
-                print(f"⚠️ Error ejecutando expectativa {type}: {e}")
+                print(f"⚠️ Error ejecutando expectativa {exp_type}: {e}")
 
         # 4. Reportar resultados a Redis para el Dashboard
         if not results:

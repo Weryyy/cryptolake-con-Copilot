@@ -1,4 +1,6 @@
 """Health check endpoint."""
+from datetime import UTC
+
 from fastapi import APIRouter
 
 from src.serving.api.models.schemas import HealthResponse
@@ -27,11 +29,11 @@ async def latency_check():
     Usa metadatos del snapshot de Iceberg para bronze (evita escanear 400K+
     filas), y scan rápido para silver (solo ~2K filas).
     """
-    from datetime import datetime, timedelta, timezone
-    from src.serving.api.utils import load_fresh_table, make_iso_filter
-    import pyarrow.compute as pc
+    from datetime import datetime
 
-    now_utc = datetime.now(timezone.utc)
+    from src.serving.api.utils import load_fresh_table
+
+    now_utc = datetime.now(UTC)
     result = {"system_time_utc": now_utc.isoformat(), "layers": {}}
 
     # Bronze: usar snapshot metadata (instantáneo, sin leer datos)
@@ -40,7 +42,7 @@ async def latency_check():
         snapshot = table.current_snapshot()
         if snapshot:
             committed_at = datetime.fromtimestamp(
-                snapshot.timestamp_ms / 1000, tz=timezone.utc
+                snapshot.timestamp_ms / 1000, tz=UTC
             )
             lag_seconds = (now_utc - committed_at).total_seconds()
             result["layers"]["bronze"] = {
@@ -63,7 +65,7 @@ async def latency_check():
         snapshot = table.current_snapshot()
         if snapshot:
             committed_at = datetime.fromtimestamp(
-                snapshot.timestamp_ms / 1000, tz=timezone.utc
+                snapshot.timestamp_ms / 1000, tz=UTC
             )
             lag_seconds = (now_utc - committed_at).total_seconds()
             result["layers"]["silver"] = {

@@ -8,6 +8,7 @@ Tareas:
 Schedule: Diarios a las 02:00 UTC
 """
 from datetime import datetime, timedelta
+
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 

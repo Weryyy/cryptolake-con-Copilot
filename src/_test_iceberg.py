@@ -1,9 +1,11 @@
 """Test completo de acceso a Iceberg desde la API."""
-from src.serving.api.utils import load_fresh_table, get_iceberg_catalog
-import pyarrow.compute as pc
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
-now = datetime.now(timezone.utc)
+import pyarrow.compute as pc
+
+from src.serving.api.utils import get_iceberg_catalog, load_fresh_table
+
+now = datetime.now(UTC)
 print(f"System UTC: {now}")
 print("=" * 60)
 
