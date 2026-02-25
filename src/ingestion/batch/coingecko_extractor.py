@@ -7,8 +7,8 @@ Endpoint: /coins/{id}/market_chart para obtener price, market_cap y volume hist�
 Para ejecutar:
     python -m src.ingestion.batch.coingecko_extractor
 """
-import time
-from typing import Any, List, Dict
+
+from typing import Any
 
 import structlog
 
@@ -26,14 +26,14 @@ class CoinGeckoExtractor(BaseExtractor):
         self.days = days
         self.base_url = settings.coingecko_base_url
 
-    def extract(self) -> List[Dict[str, Any]]:
+    def extract(self) -> list[dict[str, Any]]:
         """
         Extrae datos históricos de todos los coins configurados.
 
         Para cada coin obtiene precios, market cap y volumen.
         Respeta rate limiting con sleep entre requests.
         """
-        all_records: List[Dict[str, Any]] = []
+        all_records: list[dict[str, Any]] = []
 
         for i, coin_id in enumerate(settings.tracked_coins):
             max_retries = 3
@@ -44,12 +44,13 @@ class CoinGeckoExtractor(BaseExtractor):
                     logger.info(
                         "extracting_coin",
                         coin=coin_id,
-                        progress=f"{i+1}/{len(settings.tracked_coins)}",
+                        progress=f"{i + 1}/{len(settings.tracked_coins)}",
                         attempt=attempt + 1,
                     )
 
                     # Respetar rate limit de la API gratuita (30 calls/min)
                     import time
+
                     if attempt == 0:
                         time.sleep(2.0)
                     else:
@@ -66,8 +67,7 @@ class CoinGeckoExtractor(BaseExtractor):
                     )
 
                     if response.status_code == 429:
-                        logger.warning("rate_limit_hit",
-                                       coin=coin_id, attempt=attempt+1)
+                        logger.warning("rate_limit_hit", coin=coin_id, attempt=attempt + 1)
                         continue
 
                     response.raise_for_status()
@@ -79,32 +79,37 @@ class CoinGeckoExtractor(BaseExtractor):
 
                     for idx, price_point in enumerate(prices):
                         timestamp_ms, price = price_point
-                        all_records.append({
-                            "coin_id": coin_id,
-                            "timestamp_ms": int(timestamp_ms),
-                            "price_usd": float(price),
-                            "market_cap_usd": float(market_caps[idx][1]) if idx < len(market_caps) else None,
-                            "volume_24h_usd": float(volumes[idx][1]) if idx < len(volumes) else None,
-                        })
+                        all_records.append(
+                            {
+                                "coin_id": coin_id,
+                                "timestamp_ms": int(timestamp_ms),
+                                "price_usd": float(price),
+                                "market_cap_usd": float(market_caps[idx][1])
+                                if idx < len(market_caps)
+                                else None,
+                                "volume_24h_usd": float(volumes[idx][1])
+                                if idx < len(volumes)
+                                else None,
+                            }
+                        )
 
-                    logger.info("coin_extracted", coin=coin_id,
-                                datapoints=len(prices))
+                    logger.info("coin_extracted", coin=coin_id, datapoints=len(prices))
                     success = True
                     break
 
                 except Exception as e:
-                    logger.error("extraction_attempt_failed",
-                                 coin=coin_id, attempt=attempt+1, error=str(e))
+                    logger.error(
+                        "extraction_attempt_failed", coin=coin_id, attempt=attempt + 1, error=str(e)
+                    )
                     if attempt == max_retries - 1:
-                        logger.error(
-                            "coin_extraction_final_failure", coin=coin_id)
+                        logger.error("coin_extraction_final_failure", coin=coin_id)
 
             if not success:
                 continue
 
         return all_records
 
-    def validate(self, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def validate(self, data: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Valida que los precios sean positivos y los timestamps válidos."""
         valid = []
         invalid_count = 0
@@ -114,13 +119,7 @@ class CoinGeckoExtractor(BaseExtractor):
             timestamp = record.get("timestamp_ms")
             coin = record.get("coin_id")
 
-            if (
-                coin
-                and price is not None
-                and price > 0
-                and timestamp is not None
-                and timestamp > 0
-            ):
+            if coin and price is not None and price > 0 and timestamp is not None and timestamp > 0:
                 valid.append(record)
             else:
                 invalid_count += 1
@@ -141,8 +140,8 @@ if __name__ == "__main__":
     records = extractor.run()
 
     if records:
-        coins = set(r["coin_id"] for r in records)
-        print(f"\n📊 Resumen de extracción:")
+        coins = {r["coin_id"] for r in records}
+        print("\n📊 Resumen de extracción:")
         print(f"   Total registros: {len(records)}")
         print(f"   Coins extraídos: {len(coins)}")
         for coin in sorted(coins):

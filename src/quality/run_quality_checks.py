@@ -11,17 +11,17 @@ Usage:
 
 from __future__ import annotations
 
-import sys
 import json
-from datetime import datetime, timezone
+import sys
+from datetime import UTC, datetime
 
 from pyspark.sql import SparkSession
 
 from src.quality.validators import (
     BronzeValidator,
-    SilverValidator,
-    GoldValidator,
     CheckResult,
+    GoldValidator,
+    SilverValidator,
 )
 
 
@@ -41,8 +41,7 @@ def persist_results(spark: SparkSession, results: list[CheckResult]):
             spark.sql("DESCRIBE TABLE cryptolake.quality.check_results")
             df.writeTo("cryptolake.quality.check_results").append()
         except Exception:
-            df.writeTo("cryptolake.quality.check_results").using(
-                "iceberg").createOrReplace()
+            df.writeTo("cryptolake.quality.check_results").using("iceberg").createOrReplace()
 
         print(f"✅ {len(rows)} check results persisted to quality.check_results")
     except Exception as e:
@@ -52,8 +51,9 @@ def persist_results(spark: SparkSession, results: list[CheckResult]):
 def publish_to_redis(results: list[CheckResult]):
     """Publish DQ summary to Redis for dashboard consumption."""
     try:
-        import redis
         import os
+
+        import redis
 
         r = redis.Redis(
             host=os.getenv("REDIS_HOST", "localhost"),
@@ -74,7 +74,7 @@ def publish_to_redis(results: list[CheckResult]):
                 "success_rate": round(passed / total, 3) if total > 0 else 0,
                 "total_expectations": total,
                 "successful_expectations": passed,
-                "timestamp": datetime.now(timezone.utc).timestamp(),
+                "timestamp": datetime.now(UTC).timestamp(),
             }
             key = f"dq_report:{table_name}"
             r.set(key, json.dumps(report))
@@ -89,11 +89,10 @@ def publish_to_redis(results: list[CheckResult]):
 def main(layer: str = "all"):
     print("=" * 60)
     print(f"CryptoLake — Data Quality Checks (layer={layer})")
-    print(f"Time: {datetime.now(timezone.utc).isoformat()}")
+    print(f"Time: {datetime.now(UTC).isoformat()}")
     print("=" * 60)
 
-    spark = SparkSession.builder.appName(
-        "CryptoLake-QualityChecks").getOrCreate()
+    spark = SparkSession.builder.appName("CryptoLake-QualityChecks").getOrCreate()
 
     all_results: list[CheckResult] = []
 
@@ -105,8 +104,10 @@ def main(layer: str = "all"):
             bv.check_all()
             all_results.extend(bv.results)
             summary = bv.get_summary()
-            print(f"  Summary: {summary['passed']}/{summary['total']} passed "
-                  f"({summary['pass_rate']}%)")
+            print(
+                f"  Summary: {summary['passed']}/{summary['total']} passed "
+                f"({summary['pass_rate']}%)"
+            )
 
         if layer in ("all", "silver"):
             print("\n⚪ SILVER Layer Checks")
@@ -115,8 +116,10 @@ def main(layer: str = "all"):
             sv.check_all()
             all_results.extend(sv.results)
             summary = sv.get_summary()
-            print(f"  Summary: {summary['passed']}/{summary['total']} passed "
-                  f"({summary['pass_rate']}%)")
+            print(
+                f"  Summary: {summary['passed']}/{summary['total']} passed "
+                f"({summary['pass_rate']}%)"
+            )
 
         if layer in ("all", "gold"):
             print("\n🟡 GOLD Layer Checks")
@@ -125,8 +128,10 @@ def main(layer: str = "all"):
             gv.check_all()
             all_results.extend(gv.results)
             summary = gv.get_summary()
-            print(f"  Summary: {summary['passed']}/{summary['total']} passed "
-                  f"({summary['pass_rate']}%)")
+            print(
+                f"  Summary: {summary['passed']}/{summary['total']} passed "
+                f"({summary['pass_rate']}%)"
+            )
 
         # Overall summary
         total = len(all_results)
@@ -141,8 +146,7 @@ def main(layer: str = "all"):
         print(f"  ✅ Passed:     {passed}")
         print(f"  ❌ Failed:     {failed}")
         print(f"  ⚠️  Warnings:   {warnings}")
-        print(
-            f"  Pass rate:     {round(passed / total * 100, 1) if total > 0 else 0}%")
+        print(f"  Pass rate:     {round(passed / total * 100, 1) if total > 0 else 0}%")
 
         # Persist results
         persist_results(spark, all_results)

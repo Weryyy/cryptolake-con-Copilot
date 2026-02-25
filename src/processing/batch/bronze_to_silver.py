@@ -8,6 +8,7 @@ Transformaciones:
 4. Schema enforcement (rechaza records malformados)
 5. Merge incremental (MERGE INTO para no reprocessar todo)
 """
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col,
@@ -23,8 +24,7 @@ from src.config.settings import settings
 
 def create_spark_session() -> SparkSession:
     return (
-        SparkSession.builder
-        .appName("CryptoLake-BronzeToSilver")
+        SparkSession.builder.appName("CryptoLake-BronzeToSilver")
         .config("spark.sql.catalog.cryptolake", "org.apache.iceberg.spark.SparkCatalog")
         .config("spark.sql.catalog.cryptolake.type", "rest")
         .config("spark.sql.catalog.cryptolake.uri", settings.iceberg_catalog_uri)
@@ -33,8 +33,10 @@ def create_spark_session() -> SparkSession:
         .config("spark.sql.catalog.cryptolake.s3.path-style-access", "true")
         .config("spark.sql.catalog.cryptolake.s3.access-key-id", settings.minio_access_key)
         .config("spark.sql.catalog.cryptolake.s3.secret-access-key", settings.minio_secret_key)
-        .config("spark.sql.extensions",
-                "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+        .config(
+            "spark.sql.extensions",
+            "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+        )
         .config("spark.sql.defaultCatalog", "cryptolake")
         .getOrCreate()
     )
@@ -53,49 +55,36 @@ def process_historical_prices(spark: SparkSession):
 
     # 1. Convertir timestamp de milisegundos a fecha
     typed_df = bronze_df.withColumn(
-        "price_date",
-        from_unixtime(col("timestamp_ms") / 1000).cast("date")
+        "price_date", from_unixtime(col("timestamp_ms") / 1000).cast("date")
     )
 
     # 2. Deduplicar: quedarse con el registro más reciente por (coin_id, date)
-    dedup_window = Window.partitionBy("coin_id", "price_date").orderBy(
-        col("_ingested_at").desc()
-    )
+    dedup_window = Window.partitionBy("coin_id", "price_date").orderBy(col("_ingested_at").desc())
     deduped_df = (
-        typed_df
-        .withColumn("_row_num", row_number().over(dedup_window))
+        typed_df.withColumn("_row_num", row_number().over(dedup_window))
         .filter(col("_row_num") == 1)
         .drop("_row_num")
     )
 
     # 3. Limpiar nulls y valores inválidos
     cleaned_df = (
-        deduped_df
-        .filter(col("price_usd") > 0)
+        deduped_df.filter(col("price_usd") > 0)
         .withColumn(
-            "market_cap_usd",
-            when(col("market_cap_usd") > 0, col(
-                "market_cap_usd")).otherwise(None)
+            "market_cap_usd", when(col("market_cap_usd") > 0, col("market_cap_usd")).otherwise(None)
         )
         .withColumn(
-            "volume_24h_usd",
-            when(col("volume_24h_usd") > 0, col(
-                "volume_24h_usd")).otherwise(None)
+            "volume_24h_usd", when(col("volume_24h_usd") > 0, col("volume_24h_usd")).otherwise(None)
         )
     )
 
     # 4. Select final Silver columns
-    silver_df = (
-        cleaned_df
-        .withColumn("_processed_at", current_timestamp())
-        .select(
-            "coin_id",
-            "price_date",
-            "price_usd",
-            "market_cap_usd",
-            "volume_24h_usd",
-            "_processed_at",
-        )
+    silver_df = cleaned_df.withColumn("_processed_at", current_timestamp()).select(
+        "coin_id",
+        "price_date",
+        "price_usd",
+        "market_cap_usd",
+        "volume_24h_usd",
+        "_processed_at",
     )
 
     # 5. MERGE INTO Iceberg (upsert incremental)
@@ -117,8 +106,7 @@ def process_historical_prices(spark: SparkSession):
             'write.parquet.compression-codec' = 'zstd'
         )
     """)
-    spark.sql(
-        "ALTER TABLE cryptolake.silver.daily_prices WRITE ORDERED BY price_date")
+    spark.sql("ALTER TABLE cryptolake.silver.daily_prices WRITE ORDERED BY price_date")
 
     spark.sql("""
         MERGE INTO cryptolake.silver.daily_prices AS target
@@ -138,18 +126,15 @@ def process_fear_greed(spark: SparkSession):
     bronze_df = spark.table("cryptolake.bronze.fear_greed_index")
 
     # 1. Deduplicar en Bronze antes de pasar a Silver
-    dedup_window = Window.partitionBy(
-        "timestamp").orderBy(col("_ingested_at").desc())
+    dedup_window = Window.partitionBy("timestamp").orderBy(col("_ingested_at").desc())
     deduped_bronze = (
-        bronze_df
-        .withColumn("_row_num", row_number().over(dedup_window))
+        bronze_df.withColumn("_row_num", row_number().over(dedup_window))
         .filter(col("_row_num") == 1)
         .drop("_row_num")
     )
 
     silver_df = (
-        deduped_bronze
-        .withColumn("index_date", from_unixtime(col("timestamp")).cast("date"))
+        deduped_bronze.withColumn("index_date", from_unixtime(col("timestamp")).cast("date"))
         .withColumn("_processed_at", current_timestamp())
         .select(
             col("value").alias("fear_greed_value"),

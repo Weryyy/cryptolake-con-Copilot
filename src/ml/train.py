@@ -24,32 +24,35 @@ Features (20):
 
 Optimizado para: Xeon E5-1620 v3, 32GB RAM, CPU-only.
 """
+
+import json
+import os
+import time
+from datetime import UTC, timedelta
+
+import joblib
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
-import pandas as pd
-import numpy as np
-import time
-import os
-import json
-import joblib
-from datetime import timedelta
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report
-from src.ml.models import ReturnLSTM, get_device
-from src.ml.features import (
-    N_FEATURES,
-    FEATURE_NAMES,
-    build_training_samples,
-    build_sequence_samples,
-)
-from src.serving.api.utils import get_iceberg_catalog
+from sklearn.metrics import accuracy_score
+from torch.utils.data import DataLoader, TensorDataset
 
+from src.ml.features import (
+    FEATURE_NAMES,
+    N_FEATURES,
+    build_sequence_samples,
+    build_training_samples,
+)
+from src.ml.models import ReturnLSTM, get_device
+from src.serving.api.utils import get_iceberg_catalog
 
 # ──────────────────────────────────────────────────────────────
 # Carga de datos (velas de 30 segundos — misma que inferencia)
 # ──────────────────────────────────────────────────────────────
+
 
 def load_realtime_data(coin_id="bitcoin", hours=None):
     """Carga datos VWAP de 30s desde Iceberg (silver.realtime_vwap).
@@ -62,23 +65,33 @@ def load_realtime_data(coin_id="bitcoin", hours=None):
         table.refresh()
         row_filter = f"coin_id == '{coin_id}'"
         if hours:
-            from datetime import datetime, timezone
-            since = datetime.now(timezone.utc) - timedelta(hours=hours)
+            from datetime import datetime
+
+            since = datetime.now(UTC) - timedelta(hours=hours)
             row_filter += f" AND window_start >= '{since.isoformat()}'"
-        df = table.scan(
-            row_filter=row_filter,
-            selected_fields=(
-                "coin_id", "window_start", "close", "total_volume",
-            ),
-        ).to_arrow().to_pandas()
+        df = (
+            table.scan(
+                row_filter=row_filter,
+                selected_fields=(
+                    "coin_id",
+                    "window_start",
+                    "close",
+                    "total_volume",
+                ),
+            )
+            .to_arrow()
+            .to_pandas()
+        )
         df = df.sort_values("window_start").reset_index(drop=True)
         if len(df) < 2:
             return None
-        df = df.rename(columns={
-            "close": "price_usd",
-            "total_volume": "volume_usd",
-            "window_start": "timestamp",
-        })
+        df = df.rename(
+            columns={
+                "close": "price_usd",
+                "total_volume": "volume_usd",
+                "window_start": "timestamp",
+            }
+        )
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         # Eliminar duplicados por timestamp
         df = df.drop_duplicates(subset=["timestamp"], keep="last")
@@ -95,21 +108,31 @@ def load_daily_data(coin_id="bitcoin", days=None):
         table = catalog.load_table("silver.daily_prices")
         if days:
             from datetime import date
+
             start_date = date.today() - timedelta(days=days)
             row_filter = f"coin_id == '{coin_id}' AND price_date >= '{start_date}'"
         else:
             row_filter = f"coin_id == '{coin_id}'"
-        df = table.scan(
-            row_filter=row_filter,
-            selected_fields=(
-                "coin_id", "price_date", "price_usd", "volume_24h_usd",
-            ),
-        ).to_arrow().to_pandas()
+        df = (
+            table.scan(
+                row_filter=row_filter,
+                selected_fields=(
+                    "coin_id",
+                    "price_date",
+                    "price_usd",
+                    "volume_24h_usd",
+                ),
+            )
+            .to_arrow()
+            .to_pandas()
+        )
         df = df.sort_values("price_date").reset_index(drop=True)
-        df = df.rename(columns={
-            "volume_24h_usd": "volume_usd",
-            "price_date": "timestamp",
-        })
+        df = df.rename(
+            columns={
+                "volume_24h_usd": "volume_usd",
+                "price_date": "timestamp",
+            }
+        )
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         return df
     except Exception as e:
@@ -122,13 +145,15 @@ def get_fear_greed_value():
     try:
         catalog = get_iceberg_catalog()
         table = catalog.load_table("bronze.fear_greed_index")
-        rows = table.scan(
-            selected_fields=("value", "timestamp"),
-        ).to_arrow().to_pylist()
+        rows = (
+            table.scan(
+                selected_fields=("value", "timestamp"),
+            )
+            .to_arrow()
+            .to_pylist()
+        )
         if rows:
-            latest = sorted(
-                rows, key=lambda x: x["timestamp"], reverse=True
-            )[0]
+            latest = sorted(rows, key=lambda x: x["timestamp"], reverse=True)[0]
             return int(latest["value"])
     except Exception:
         pass
@@ -149,6 +174,7 @@ def load_coingecko_hourly(coin_id="bitcoin", days=30):
         DataFrame con [timestamp, price_usd, volume_usd, coin_id] o None.
     """
     import requests
+
     try:
         print(f"   [API] Fetching CoinGecko hourly {coin_id} ({days}d)...")
         resp = requests.get(
@@ -169,12 +195,14 @@ def load_coingecko_hourly(coin_id="bitcoin", days=30):
         records = []
         for i, (ts_ms, price) in enumerate(prices):
             vol = volumes[i][1] if i < len(volumes) else 0.0
-            records.append({
-                "timestamp": pd.Timestamp(ts_ms, unit="ms", tz="UTC"),
-                "price_usd": float(price),
-                "volume_usd": float(vol),
-                "coin_id": coin_id,
-            })
+            records.append(
+                {
+                    "timestamp": pd.Timestamp(ts_ms, unit="ms", tz="UTC"),
+                    "price_usd": float(price),
+                    "volume_usd": float(vol),
+                    "coin_id": coin_id,
+                }
+            )
         df = pd.DataFrame(records)
         print(f"   [OK] CoinGecko {coin_id}: {len(df)} hourly points")
         return df
@@ -195,8 +223,13 @@ def load_multicoin_realtime(coins=None):
     """
     if coins is None:
         coins = [
-            "bitcoin", "ethereum", "solana",
-            "cardano", "chainlink", "polkadot", "avalanche-2",
+            "bitcoin",
+            "ethereum",
+            "solana",
+            "cardano",
+            "chainlink",
+            "polkadot",
+            "avalanche-2",
         ]
     results = {}
     for coin_id in coins:
@@ -210,6 +243,7 @@ def load_multicoin_realtime(coins=None):
 # ──────────────────────────────────────────────────────────────
 # Entrenamiento del ensemble
 # ──────────────────────────────────────────────────────────────
+
 
 def train_ensemble():
     """Entrena los 3 modelos del ensemble con datos reales.
@@ -230,7 +264,7 @@ def train_ensemble():
     print("=" * 60)
     print("[TRAIN] ENTRENAMIENTO ENSEMBLE v3 -- Multi-Coin + CoinGecko")
     print("=" * 60)
-    print(f"   CPU: Intel Xeon E5-1620 v3 (4C/8T)")
+    print("   CPU: Intel Xeon E5-1620 v3 (4C/8T)")
     print(f"   Threads: {n_threads}")
     print(f"   Device: {device}")
     print(f"   Features: {N_FEATURES} ({', '.join(FEATURE_NAMES[:5])}...)")
@@ -250,6 +284,7 @@ def train_ensemble():
     coingecko_frames = []
     for cg_coin in cg_coins:
         import time as _t
+
         _t.sleep(2.5)  # rate limit CoinGecko gratis: 30 calls/min
         df_cg = load_coingecko_hourly(cg_coin, days=30)
         if df_cg is not None:
@@ -281,8 +316,12 @@ def train_ensemble():
     def _add_samples(prices, volumes, timestamps, source_name):
         """Extrae features y targets de una serie de precios."""
         X_t, y_d, y_r = build_training_samples(
-            prices, volumes, timestamps, fg_val,
-            lookback=lookback, target_horizon=target_horizon,
+            prices,
+            volumes,
+            timestamps,
+            fg_val,
+            lookback=lookback,
+            target_horizon=target_horizon,
         )
         n_tab = 0
         n_seq = 0
@@ -293,8 +332,12 @@ def train_ensemble():
             n_tab = len(X_t)
 
         X_s, y_ds, y_rs = build_sequence_samples(
-            prices, volumes, timestamps, fg_val,
-            lookback=lookback, seq_len=seq_len,
+            prices,
+            volumes,
+            timestamps,
+            fg_val,
+            lookback=lookback,
+            seq_len=seq_len,
             target_horizon=target_horizon,
         )
         if X_s is not None and len(X_s) >= 5:
@@ -344,19 +387,18 @@ def train_ensemble():
         X_seq = y_dir_seq = y_ret_seq = None
 
     print(f"\n   {'Source':<25} {'Tabular':>8} {'Sequence':>8}")
-    print(f"   {'─'*25} {'─'*8} {'─'*8}")
+    print(f"   {'─' * 25} {'─' * 8} {'─' * 8}")
     for src, stats in sorted(source_stats.items()):
         print(f"   {src:<25} {stats['tab']:>8} {stats['seq']:>8}")
-    print(f"   {'─'*25} {'─'*8} {'─'*8}")
-    print(f"   {'TOTAL':<25} {len(X_tab):>8} "
-          f"{len(X_seq) if has_lstm_data else 0:>8}")
+    print(f"   {'─' * 25} {'─' * 8} {'─' * 8}")
+    print(f"   {'TOTAL':<25} {len(X_tab):>8} {len(X_seq) if has_lstm_data else 0:>8}")
     print(f"   Target horizon: {target_horizon} pasos")
-    print(f"   Distribution: {y_dir.mean():.1%} UP / {1-y_dir.mean():.1%} DN")
+    print(f"   Distribution: {y_dir.mean():.1%} UP / {1 - y_dir.mean():.1%} DN")
 
     if has_lstm_data:
         print(f"   Muestras secuenciales: {len(X_seq)}")
     else:
-        print(f"   [WARN] No hay suficientes datos para LSTM, solo entrena GB+RF")
+        print("   [WARN] No hay suficientes datos para LSTM, solo entrena GB+RF")
 
     # -- 3. Split cronologico (walk-forward) --
     # NOTA: con multi-coin, los datos están mezclados. Shuffle para
@@ -370,13 +412,11 @@ def train_ensemble():
     split = int(len(X_tab) * 0.80)
     X_train, X_val = X_tab[:split], X_tab[split:]
     y_dir_train, y_dir_val = y_dir[:split], y_dir[split:]
-    y_ret_train, y_ret_val = y_ret[:split], y_ret[split:]
+    _y_ret_train, _y_ret_val = y_ret[:split], y_ret[split:]
 
     print(f"\n[SPLIT] Split: {len(X_train)} train / {len(X_val)} validation")
-    print(
-        f"   Distribución train: {y_dir_train.mean():.1%} UP / {1-y_dir_train.mean():.1%} DOWN")
-    print(
-        f"   Distribución val:   {y_dir_val.mean():.1%} UP / {1-y_dir_val.mean():.1%} DOWN")
+    print(f"   Distribución train: {y_dir_train.mean():.1%} UP / {1 - y_dir_train.mean():.1%} DOWN")
+    print(f"   Distribución val:   {y_dir_val.mean():.1%} UP / {1 - y_dir_val.mean():.1%} DOWN")
 
     os.makedirs("models", exist_ok=True)
     results = {}
@@ -421,8 +461,9 @@ def train_ensemble():
 
     # Feature importance
     importances = sorted(
-        zip(FEATURE_NAMES, gb.feature_importances_),
-        key=lambda x: x[1], reverse=True,
+        zip(FEATURE_NAMES, gb.feature_importances_, strict=False),
+        key=lambda x: x[1],
+        reverse=True,
     )
     print("   Top features:")
     for name, imp in importances[:5]:
@@ -439,9 +480,9 @@ def train_ensemble():
 
     rf = RandomForestClassifier(
         n_estimators=min(300, max(100, n_samples // 2)),
-        max_depth=5,            # mas profundo para patrones no lineales
+        max_depth=5,  # mas profundo para patrones no lineales
         min_samples_leaf=max(5, n_samples // 50),
-        max_features="sqrt",    # sqrt(20) ~ 4-5 features por split
+        max_features="sqrt",  # sqrt(20) ~ 4-5 features por split
         class_weight="balanced",  # compensar desbalance UP/DOWN
         random_state=42,
         n_jobs=n_threads,
@@ -477,21 +518,19 @@ def train_ensemble():
         split_seq = int(len(X_seq) * 0.80)
         X_seq_train = torch.tensor(X_seq[:split_seq]).to(device)
         X_seq_val = torch.tensor(X_seq[split_seq:]).to(device)
-        y_dir_seq_train = torch.tensor(
-            y_dir_seq[:split_seq]).unsqueeze(-1).to(device)
-        y_dir_seq_val = torch.tensor(
-            y_dir_seq[split_seq:]).unsqueeze(-1).to(device)
-        y_ret_seq_train = torch.tensor(
-            y_ret_seq[:split_seq]).unsqueeze(-1).to(device)
-        y_ret_seq_val = torch.tensor(
-            y_ret_seq[split_seq:]).unsqueeze(-1).to(device)
+        y_dir_seq_train = torch.tensor(y_dir_seq[:split_seq]).unsqueeze(-1).to(device)
+        y_dir_seq_val = torch.tensor(y_dir_seq[split_seq:]).unsqueeze(-1).to(device)
+        y_ret_seq_train = torch.tensor(y_ret_seq[:split_seq]).unsqueeze(-1).to(device)
+        y_ret_seq_val = torch.tensor(y_ret_seq[split_seq:]).unsqueeze(-1).to(device)
 
         model = ReturnLSTM(
-            input_dim=N_FEATURES, hidden_dim=64, num_layers=2, dropout=0.2,
+            input_dim=N_FEATURES,
+            hidden_dim=64,
+            num_layers=2,
+            dropout=0.2,
         ).to(device)
 
-        optimizer = optim.AdamW(
-            model.parameters(), lr=0.001, weight_decay=1e-4)
+        optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
         mse_loss = nn.MSELoss()
         bce_loss = nn.BCELoss()
         # Focal-style weighting: direccion vale 2x mas que retorno
@@ -499,7 +538,10 @@ def train_ensemble():
         direction_loss_weight = 2.0
         return_loss_weight = 1.0
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode="min", factor=0.5, patience=15,
+            optimizer,
+            mode="min",
+            factor=0.5,
+            patience=15,
         )
 
         # Mini-batches (mas grande con multi-coin data)
@@ -523,8 +565,9 @@ def train_ensemble():
             for xb, yb_ret, yb_dir in loader:
                 optimizer.zero_grad()
                 pred_ret, pred_dir = model(xb)
-                loss = (return_loss_weight * mse_loss(pred_ret, yb_ret)
-                        + direction_loss_weight * bce_loss(pred_dir, yb_dir))
+                loss = return_loss_weight * mse_loss(
+                    pred_ret, yb_ret
+                ) + direction_loss_weight * bce_loss(pred_dir, yb_dir)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
@@ -546,8 +589,7 @@ def train_ensemble():
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                best_state = {k: v.clone()
-                              for k, v in model.state_dict().items()}
+                best_state = {k: v.clone() for k, v in model.state_dict().items()}
                 patience_counter = 0
             else:
                 patience_counter += 1
@@ -569,10 +611,10 @@ def train_ensemble():
         model.eval()
         with torch.no_grad():
             _, val_dir_pred = model(X_seq_val)
-            lstm_preds = (val_dir_pred.cpu().numpy().flatten()
-                          > 0.5).astype(float)
+            lstm_preds = (val_dir_pred.cpu().numpy().flatten() > 0.5).astype(float)
             lstm_val_acc = accuracy_score(
-                y_dir_seq[split_seq:], lstm_preds,
+                y_dir_seq[split_seq:],
+                lstm_preds,
             )
 
         lstm_time = time.time() - start
@@ -615,7 +657,7 @@ def train_ensemble():
         # Fallback: peso uniforme si ninguno supera 50%
         w_gb, w_rf, w_lstm = 0.33, 0.33, 0.34
 
-    print(f"\n   [WEIGHTS] Pesos adaptativos basados en val accuracy:")
+    print("\n   [WEIGHTS] Pesos adaptativos basados en val accuracy:")
     print(f"     GB:   {gb_val_acc:.1%} acc -> peso {w_gb:.3f}")
     print(f"     RF:   {rf_val_acc:.1%} acc -> peso {w_rf:.3f}")
     print(f"     LSTM: {lstm_val_acc:.1%} acc -> peso {w_lstm:.3f}")
@@ -632,26 +674,16 @@ def train_ensemble():
             lstm_proba_aligned[offset:] = (
                 val_dir_pred.cpu().numpy().flatten()[: len(y_dir_val) - offset]
             )
-            ensemble_proba = (
-                w_gb * gb_val_proba
-                + w_rf * rf_val_proba
-                + w_lstm * lstm_proba_aligned
-            )
+            ensemble_proba = w_gb * gb_val_proba + w_rf * rf_val_proba + w_lstm * lstm_proba_aligned
         else:
             # LSTM no alineado, usar solo GB + RF
             w_sum = w_gb + w_rf
             if w_sum > 0:
-                ensemble_proba = (
-                    (w_gb / w_sum) * gb_val_proba
-                    + (w_rf / w_sum) * rf_val_proba
-                )
+                ensemble_proba = (w_gb / w_sum) * gb_val_proba + (w_rf / w_sum) * rf_val_proba
     elif w_gb + w_rf > 0:
         # Sin LSTM, redistribuir peso
         w_sum = w_gb + w_rf
-        ensemble_proba = (
-            (w_gb / w_sum) * gb_val_proba
-            + (w_rf / w_sum) * rf_val_proba
-        )
+        ensemble_proba = (w_gb / w_sum) * gb_val_proba + (w_rf / w_sum) * rf_val_proba
 
     # Accuracy sin filtro de confianza
     ensemble_preds = (ensemble_proba > 0.5).astype(float)
@@ -669,8 +701,7 @@ def train_ensemble():
         mask = confidence >= thresh
         n_confident = mask.sum()
         if n_confident > 0:
-            filtered_acc = accuracy_score(
-                y_dir_val[mask], ensemble_preds[mask])
+            filtered_acc = accuracy_score(y_dir_val[mask], ensemble_preds[mask])
             coverage = n_confident / len(y_dir_val)
             print(
                 f"     conf >= {thresh:.1f}: "
@@ -681,8 +712,7 @@ def train_ensemble():
                 best_filtered_acc = filtered_acc
                 best_threshold = thresh
 
-    print(f"\n   [BEST] Mejor umbral: {best_threshold} "
-          f"-> {best_filtered_acc:.1%} accuracy")
+    print(f"\n   [BEST] Mejor umbral: {best_threshold} -> {best_filtered_acc:.1%} accuracy")
 
     # -- 8. Guardar configuracion del ensemble --
     config = {
@@ -709,7 +739,7 @@ def train_ensemble():
 
     with open("models/ensemble_config.json", "w") as f:
         json.dump(config, f, indent=2)
-    print(f"\n   [OK] Configuracion guardada: models/ensemble_config.json")
+    print("\n   [OK] Configuracion guardada: models/ensemble_config.json")
 
     # -- Resumen final --
     print("\n" + "=" * 60)
@@ -718,11 +748,10 @@ def train_ensemble():
     print(f"   GradientBoosting: {gb_val_acc:.1%} val accuracy")
     print(f"   RandomForest:     {rf_val_acc:.1%} val accuracy")
     print(f"   ReturnLSTM:       {lstm_val_acc:.1%} val accuracy")
-    print(f"   ─────────────────────────────────")
+    print("   ─────────────────────────────────")
     print(f"   ENSEMBLE:         {ensemble_acc:.1%} (sin filtro)")
-    print(
-        f"   ENSEMBLE:         {best_filtered_acc:.1%} (con confianza >= {best_threshold})")
-    print(f"   -----------------------------------------")
+    print(f"   ENSEMBLE:         {best_filtered_acc:.1%} (con confianza >= {best_threshold})")
+    print("   -----------------------------------------")
     if best_filtered_acc >= 0.65:
         print("   [EXCELLENT] Excelente: modelo viable para uso real")
     elif best_filtered_acc >= 0.60:
@@ -736,6 +765,7 @@ def train_ensemble():
 
 # ── Compatibilidad con el modo anterior ──
 
+
 def train(mode="ensemble"):
     """Punto de entrada principal.
 
@@ -748,14 +778,13 @@ def train(mode="ensemble"):
         train_ensemble()
     else:
         # Legacy: entrenar TFT original
-        print(
-            f"[WARN] Modo legacy '{mode}' -- usa 'ensemble' para el nuevo pipeline")
+        print(f"[WARN] Modo legacy '{mode}' -- usa 'ensemble' para el nuevo pipeline")
         _train_legacy(mode)
 
 
 def _train_legacy(mode):
     """Entrenamiento legacy del TFT original (backward-compatible)."""
-    from src.ml.models import TemporalFusionTransformer, CouncilOfAgents, compute_sma
+    from src.ml.models import CouncilOfAgents, TemporalFusionTransformer, compute_sma
 
     device = get_device()
     n_threads = min(4, os.cpu_count() or 4)
@@ -787,14 +816,17 @@ def _train_legacy(mode):
     volumes = df["volume_usd"].fillna(0).values
 
     # Usar feature engineering original simple
-    from src.ml.models import compute_rsi, compute_sma
+    from src.ml.models import compute_rsi
+
     window_size = min(10, len(prices) // 3)
     rsi_period = min(14, max(3, len(prices) // 4))
     rsi = compute_rsi(prices, period=rsi_period)
     sma_short = compute_sma(prices, min(5, len(prices)))
     sma_long = compute_sma(prices, min(10, len(prices)))
     sma_ratio = np.where(
-        sma_long > 0, (sma_short / (sma_long + 1e-10)) - 1.0, 0.0,
+        sma_long > 0,
+        (sma_short / (sma_long + 1e-10)) - 1.0,
+        0.0,
     )
     p_min, p_max = prices.min(), prices.max()
     p_denom = p_max - p_min if p_max > p_min else 1.0
@@ -808,15 +840,18 @@ def _train_legacy(mode):
     fg_val = get_fear_greed_value()
     X, Y, agents = [], [], []
     for i in range(len(prices_norm) - window_size - 1):
-        seq = np.stack([
-            prices_norm[i:i + window_size],
-            volumes_norm[i:i + window_size],
-            rsi_norm[i:i + window_size],
-            sma_ratio_clipped[i:i + window_size],
-        ], axis=1)
+        seq = np.stack(
+            [
+                prices_norm[i : i + window_size],
+                volumes_norm[i : i + window_size],
+                rsi_norm[i : i + window_size],
+                sma_ratio_clipped[i : i + window_size],
+            ],
+            axis=1,
+        )
         X.append(seq)
         Y.append(prices_norm[i + window_size])
-        wp = prices[i:i + window_size]
+        wp = prices[i : i + window_size]
         tech, sent = CouncilOfAgents.compute_agents_for_series(wp, fg_val)
         agents.append([tech, sent])
 
@@ -837,7 +872,7 @@ def _train_legacy(mode):
     dataset = TensorDataset(X_t, Y_t, A_t)
     loader = DataLoader(dataset, batch_size=min(64, len(X_t)), shuffle=True)
 
-    for epoch in range(150):
+    for _epoch in range(150):
         model.train()
         for xb, yb, ab in loader:
             optimizer.zero_grad()

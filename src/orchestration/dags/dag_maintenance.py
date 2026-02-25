@@ -7,7 +7,9 @@ Tareas:
 
 Schedule: Diarios a las 02:00 UTC
 """
+
 from datetime import datetime, timedelta
+
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 
@@ -25,7 +27,6 @@ with DAG(
     catchup=False,
     tags=["maintenance", "iceberg"],
 ) as dag:
-
     # Compactación de Bronze Realtime (donde el streaming genera muchos archivos)
     compact_bronze = BashOperator(
         task_id="compact_bronze_realtime",
@@ -33,7 +34,7 @@ with DAG(
             "spark-submit --master spark://spark-master:7077 "
             "--conf spark.sql.catalog.cryptolake.type=rest "
             "--conf spark.sql.catalog.cryptolake.uri=http://iceberg-rest:8181 "
-            "--execute 'CALL cryptolake.system.rewrite_data_files(table => \"bronze.realtime_prices\", options => map(\"min-input-files\",\"5\"))'"
+            '--execute \'CALL cryptolake.system.rewrite_data_files(table => "bronze.realtime_prices", options => map("min-input-files","5"))\''
         ),
     )
 

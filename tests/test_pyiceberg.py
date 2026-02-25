@@ -1,6 +1,4 @@
-
 from pyiceberg.catalog import load_catalog
-import pandas as pd
 
 
 def test_query():
@@ -12,7 +10,7 @@ def test_query():
             "s3.endpoint": "http://localhost:9000",
             "s3.access-key-id": "cryptolake",
             "s3.secret-access-key": "cryptolake123",
-        }
+        },
     )
 
     table = catalog.load_table("silver.daily_prices")

@@ -4,6 +4,7 @@ Spark Batch job: Carga datos de extractores batch a Iceberg Bronze.
 Lee los datos extraídos por los extractores (CoinGecko, Fear & Greed),
 los convierte a DataFrame con schema Bronze, y los inserta en Iceberg.
 """
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import current_timestamp
 
@@ -19,8 +20,7 @@ from src.processing.schemas.bronze import (
 def create_spark_session() -> SparkSession:
     """Crea SparkSession para jobs batch."""
     return (
-        SparkSession.builder
-        .appName("CryptoLake-APIToBronze")
+        SparkSession.builder.appName("CryptoLake-APIToBronze")
         .config("spark.sql.catalog.cryptolake", "org.apache.iceberg.spark.SparkCatalog")
         .config("spark.sql.catalog.cryptolake.type", "rest")
         .config("spark.sql.catalog.cryptolake.uri", settings.iceberg_catalog_uri)
@@ -29,8 +29,10 @@ def create_spark_session() -> SparkSession:
         .config("spark.sql.catalog.cryptolake.s3.path-style-access", "true")
         .config("spark.sql.catalog.cryptolake.s3.access-key-id", settings.minio_access_key)
         .config("spark.sql.catalog.cryptolake.s3.secret-access-key", settings.minio_secret_key)
-        .config("spark.sql.extensions",
-                "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+        .config(
+            "spark.sql.extensions",
+            "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+        )
         .config("spark.sql.defaultCatalog", "cryptolake")
         .getOrCreate()
     )
