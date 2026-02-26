@@ -108,16 +108,15 @@ def fetch_fear_greed_history():
         return []
 
 
-@st.cache_data(ttl=30)
 def fetch_realtime_ohlc(coin_id: str):
+    """Fetch OHLC data — no cache, fragment already reruns every 30s."""
     try:
         url = f"{API_URL}/api/v1/analytics/realtime-ohlc/{coin_id}"
-        response = requests.get(url, timeout=15)
+        response = requests.get(url, timeout=30)
         if response.status_code == 200:
             return response.json()
         return []
-    except Exception as e:
-        st.sidebar.error(f"Error OHLC: {e}")
+    except Exception:
         return []
 
 
@@ -176,7 +175,7 @@ def realtime_chart_panel():
             ohlc_data = fetch_realtime_ohlc("bitcoin")
         except Exception as e:
             ohlc_data = []
-            st.sidebar.error(f"OHLC fetch error: {e}")
+            st.error(f"OHLC fetch error: {e}")
 
         if ohlc_data and len(ohlc_data) > 0:
             df_ohlc = pd.DataFrame(ohlc_data)
@@ -250,20 +249,26 @@ def realtime_chart_panel():
                 if pred_hist and len(pred_hist) > 1:
                     hist_times = []
                     hist_prices = []
+                    # Get OHLC time range to filter only relevant predictions
+                    ohlc_start = df_ohlc['timestamp'].min()
                     for ph in pred_hist:
                         ts = pd.to_datetime(
                             ph['timestamp'], unit='s', utc=True)
-                        hist_times.append(ts)
-                        hist_prices.append(ph['predicted_price'])
-                    fig_ohlc.add_trace(go.Scatter(
-                        x=hist_times,
-                        y=hist_prices,
-                        mode='lines',
-                        name='Predicciones anteriores',
-                        line=dict(color='orange', width=1.5,
-                                  dash='solid'),
-                        opacity=0.7,
-                    ))
+                        # Only include predictions within OHLC time range
+                        if ts >= ohlc_start:
+                            hist_times.append(ts)
+                            hist_prices.append(ph['predicted_price'])
+                    if len(hist_times) > 1:
+                        fig_ohlc.add_trace(go.Scatter(
+                            x=hist_times,
+                            y=hist_prices,
+                            mode='lines+markers',
+                            name='Pred. anteriores',
+                            line=dict(color='orange', width=2,
+                                      dash='solid'),
+                            marker=dict(size=4, symbol='circle'),
+                            opacity=0.8,
+                        ))
 
             fig_ohlc.update_layout(
                 title="Real-time BTC Candles & Dual AI Predictions",
@@ -348,22 +353,33 @@ def realtime_chart_panel():
                 "Las metricas apareceran tras ~2 min de predicciones")
 
 
-pred = fetch_prediction()
-if pred:
+# -- ML Status Sidebar (Dual Model) --
+_dual_sidebar = fetch_dual_prediction()
+if _dual_sidebar:
     st.sidebar.markdown("---")
-    st.sidebar.subheader("🤖 ML Status (Dual Memory)")
+    st.sidebar.subheader("🤖 ML Status (Dual Model)")
 
-    bias_color = "🟢" if pred['sentiment_bias'] == "Bullish" else "🔴"
-    st.sidebar.write(f"{bias_color} Bias: **{pred['sentiment_bias']}**")
+    # Legacy info
+    _leg = _dual_sidebar.get('legacy')
+    if _leg and _leg.get('predicted_price', 0) > 0:
+        _leg_diff = ((_leg['predicted_price'] - _leg['current_price']) / _leg['current_price']) * 100 if _leg.get('current_price', 0) > 0 else 0
+        _leg_icon = "🟢" if _leg_diff > 0 else "🔴"
+        st.sidebar.info(f"🧠 Legacy TFT: {_leg_icon} {_leg_diff:+.3f}%")
 
-    if 'memory_details' in pred and pred['memory_details']:
-        hist = pred['memory_details'].get('historical', 0)
-        recent = pred['memory_details'].get('recent', 0)
+    # Ensemble info
+    _ens = _dual_sidebar.get('ensemble')
+    if _ens and _ens.get('predicted_price', 0) > 0:
+        _ens_diff = ((_ens['predicted_price'] - _ens['current_price']) / _ens['current_price']) * 100 if _ens.get('current_price', 0) > 0 else 0
+        _ens_icon = "🟢" if _ens_diff > 0 else "🔴"
+        st.sidebar.success(f"🎯 Ensemble: {_ens_icon} {_ens_diff:+.3f}%")
+        # Show ensemble model details
+        _md = _ens.get('memory_details', {})
+        if isinstance(_md, dict) and 'gb_prob' in _md:
+            st.sidebar.caption(
+                f"GB:{_md.get('gb_prob',0):.0%} RF:{_md.get('rf_prob',0):.0%} LSTM:{_md.get('lstm_prob',0):.0%}"
+            )
 
-        # Mostrar influencia en modo barra de progreso o texto
-        st.sidebar.info(f"🏛️ Historical: {hist:.4f}")
-        st.sidebar.success(f"⚡ Recent: {recent:.4f}")
-        st.sidebar.caption("Ensamble: 70% Recent | 30% Hist")
+    st.sidebar.caption(f"Primary: **{_dual_sidebar.get('primary_model', 'N/A')}**")
 
 st.title("🏔️ CryptoLake — Crypto Analytics Dashboard")
 st.markdown("---")
