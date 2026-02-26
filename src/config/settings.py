@@ -7,8 +7,9 @@ Pydantic Settings lee automáticamente de:
 
 Ejemplo: MINIO_ENDPOINT en .env → settings.minio_endpoint en Python
 """
+
 from __future__ import annotations
-from typing import List
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,7 +33,7 @@ class Settings(BaseSettings):
     # ── MinIO / S3 ──────────────────────────────────────────
     minio_endpoint: str = "http://localhost:9000"
     minio_access_key: str = "cryptolake"
-    minio_secret_key: str = "cryptolake123"
+    minio_secret_key: str = "cryptolake123"  # noqa: S105
 
     # ── Kafka ───────────────────────────────────────────────
     kafka_bootstrap_servers: str = "localhost:9092"
@@ -46,7 +47,7 @@ class Settings(BaseSettings):
     fear_greed_url: str = "https://api.alternative.me/fng/"
 
     # ── Coins a rastrear ────────────────────────────────────
-    tracked_coins: List[str] = [
+    tracked_coins: list[str] = [
         "bitcoin",
         "ethereum",
         "solana",

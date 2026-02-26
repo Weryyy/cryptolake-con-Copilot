@@ -1,6 +1,6 @@
 """Price endpoints."""
+
 from datetime import date, timedelta
-from typing import Optional
 
 from fastapi import APIRouter, Query
 
@@ -13,14 +13,8 @@ router = APIRouter(tags=["Prices"])
 @router.get("/prices/{coin_id}", response_model=list[PriceResponse])
 async def get_prices(
     coin_id: str,
-    start_date: Optional[date] = Query(
-        default=None,
-        description="Start date (default: 30 days ago)"
-    ),
-    end_date: Optional[date] = Query(
-        default=None,
-        description="End date (default: today)"
-    ),
+    start_date: date | None = None,
+    end_date: date | None = None,
     limit: int = Query(default=100, le=1000),
 ):
     """
@@ -36,9 +30,15 @@ async def get_prices(
 
     # Columnas que necesita PriceResponse
     price_fields = (
-        "coin_id", "price_date", "price_usd", "market_cap_usd",
-        "volume_24h_usd", "price_change_pct_1d",
-        "moving_avg_7d", "moving_avg_30d", "ma30_signal",
+        "coin_id",
+        "price_date",
+        "price_usd",
+        "market_cap_usd",
+        "volume_24h_usd",
+        "price_change_pct_1d",
+        "moving_avg_7d",
+        "moving_avg_30d",
+        "ma30_signal",
     )
 
     try:
@@ -48,11 +48,15 @@ async def get_prices(
         # Solo leer las columnas disponibles en esta tabla
         available_cols = {f.name for f in table.schema().fields}
         fields = tuple(f for f in price_fields if f in available_cols)
-        df = table.scan(
-            row_filter=row_filter,
-            selected_fields=fields,
-            limit=limit,
-        ).to_arrow().to_pylist()
+        df = (
+            table.scan(
+                row_filter=row_filter,
+                selected_fields=fields,
+                limit=limit,
+            )
+            .to_arrow()
+            .to_pylist()
+        )
         # Sort by price_date to ensure correct chart rendering
         df.sort(key=lambda x: str(x.get("price_date", "")))
         return [PriceResponse(**row) for row in df]
@@ -64,11 +68,15 @@ async def get_prices(
             row_filter = f"coin_id == '{coin_id}' AND price_date >= '{start_date}' AND price_date <= '{end_date}'"
             available_cols = {f.name for f in table.schema().fields}
             fields = tuple(f for f in price_fields if f in available_cols)
-            df = table.scan(
-                row_filter=row_filter,
-                selected_fields=fields,
-                limit=limit,
-            ).to_arrow().to_pylist()
+            df = (
+                table.scan(
+                    row_filter=row_filter,
+                    selected_fields=fields,
+                    limit=limit,
+                )
+                .to_arrow()
+                .to_pylist()
+            )
             df.sort(key=lambda x: str(x.get("price_date", "")))
             return [PriceResponse(**row) for row in df]
         except Exception as e2:

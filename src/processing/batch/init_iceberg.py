@@ -1,14 +1,18 @@
 from pyspark.sql import SparkSession
+
 from src.config.settings import settings
+
 
 def init_iceberg():
     spark = (
-        SparkSession.builder
-        .appName("CryptoLake-InitIceberg")
+        SparkSession.builder.appName("CryptoLake-InitIceberg")
         .config("spark.sql.catalog.cryptolake", "org.apache.iceberg.spark.SparkCatalog")
         .config("spark.sql.catalog.cryptolake.type", "rest")
         .config("spark.sql.catalog.cryptolake.uri", settings.iceberg_catalog_uri)
-        .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+        .config(
+            "spark.sql.extensions",
+            "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+        )
         .config("spark.sql.defaultCatalog", "cryptolake")
         .getOrCreate()
     )
@@ -64,6 +68,7 @@ def init_iceberg():
 
     print("Iceberg initialization complete!")
     spark.stop()
+
 
 if __name__ == "__main__":
     init_iceberg()

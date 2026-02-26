@@ -1,4 +1,5 @@
 """Kafka configuration utilities."""
+
 from src.config.settings import settings
 
 

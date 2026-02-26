@@ -1,4 +1,5 @@
 """Unit tests for the Binance producer transformations."""
+
 from src.ingestion.streaming.binance_producer import (
     BINANCE_SYMBOLS,
     transform_binance_trade,
@@ -37,8 +38,14 @@ class TestTransformBinanceTrade:
 
     def test_all_symbols_mapped(self):
         expected_coins = {
-            "bitcoin", "ethereum", "solana", "cardano",
-            "polkadot", "chainlink", "avalanche-2", "matic-network",
+            "bitcoin",
+            "ethereum",
+            "solana",
+            "cardano",
+            "polkadot",
+            "chainlink",
+            "avalanche-2",
+            "matic-network",
         }
         assert set(BINANCE_SYMBOLS.values()) == expected_coins
 

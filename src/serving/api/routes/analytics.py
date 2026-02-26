@@ -1,12 +1,26 @@
 """Analytics endpoints."""
+
 import json
 import subprocess
 import threading
-from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, BackgroundTasks
-from src.serving.api.models.schemas import FearGreedResponse, FearGreedHistoryItem, MarketOverview, PredictionResponse, OHLCResponse, SystemAlert, DQReport, PredictionAccuracy, DualPredictionResponse, ModelAccuracyComparison
-from src.serving.api.utils import get_redis_client, load_fresh_table, make_iso_filter
+from datetime import UTC, datetime, timedelta
+
 import pyarrow.compute as pc
+from fastapi import APIRouter
+
+from src.serving.api.models.schemas import (
+    DQReport,
+    DualPredictionResponse,
+    FearGreedHistoryItem,
+    FearGreedResponse,
+    MarketOverview,
+    ModelAccuracyComparison,
+    OHLCResponse,
+    PredictionAccuracy,
+    PredictionResponse,
+    SystemAlert,
+)
+from src.serving.api.utils import get_redis_client, load_fresh_table, make_iso_filter
 
 router = APIRouter(tags=["Analytics"])
 
@@ -20,35 +34,60 @@ _retrain_lock = threading.Lock()
 def _run_training(mode: str):
     """Execute training in a subprocess and publish status to Redis."""
     redis = get_redis_client()
-    redis.set("ml_retrain_status", json.dumps({
-        "status": "running", "mode": mode,
-        "started_at": datetime.now(timezone.utc).isoformat(),
-    }))
+    redis.set(
+        "ml_retrain_status",
+        json.dumps(
+            {
+                "status": "running",
+                "mode": mode,
+                "started_at": datetime.now(UTC).isoformat(),
+            }
+        ),
+    )
     try:
         result = subprocess.run(
             ["python", "-m", "src.ml.train", f"--mode={mode}"],
-            capture_output=True, text=True, timeout=1800,  # 30 min max
+            capture_output=True,
+            text=True,
+            timeout=1800,  # 30 min max
         )
         success = result.returncode == 0
-        redis.set("ml_retrain_status", json.dumps({
-            "status": "success" if success else "failed",
-            "mode": mode,
-            "finished_at": datetime.now(timezone.utc).isoformat(),
-            "returncode": result.returncode,
-            "stdout_tail": (result.stdout or "")[-500:],
-            "stderr_tail": (result.stderr or "")[-500:],
-        }))
+        redis.set(
+            "ml_retrain_status",
+            json.dumps(
+                {
+                    "status": "success" if success else "failed",
+                    "mode": mode,
+                    "finished_at": datetime.now(UTC).isoformat(),
+                    "returncode": result.returncode,
+                    "stdout_tail": (result.stdout or "")[-500:],
+                    "stderr_tail": (result.stderr or "")[-500:],
+                }
+            ),
+        )
     except subprocess.TimeoutExpired:
-        redis.set("ml_retrain_status", json.dumps({
-            "status": "timeout", "mode": mode,
-            "finished_at": datetime.now(timezone.utc).isoformat(),
-        }))
+        redis.set(
+            "ml_retrain_status",
+            json.dumps(
+                {
+                    "status": "timeout",
+                    "mode": mode,
+                    "finished_at": datetime.now(UTC).isoformat(),
+                }
+            ),
+        )
     except Exception as e:
-        redis.set("ml_retrain_status", json.dumps({
-            "status": "error", "mode": mode,
-            "finished_at": datetime.now(timezone.utc).isoformat(),
-            "error": str(e),
-        }))
+        redis.set(
+            "ml_retrain_status",
+            json.dumps(
+                {
+                    "status": "error",
+                    "mode": mode,
+                    "finished_at": datetime.now(UTC).isoformat(),
+                    "error": str(e),
+                }
+            ),
+        )
     finally:
         _retrain_lock.release()
 
@@ -68,8 +107,7 @@ async def trigger_retrain(mode: str = "ensemble"):
         return {"status": "error", "detail": "mode must be 'ensemble' or 'legacy'"}
 
     if not _retrain_lock.acquire(blocking=False):
-        return {"status": "already_running",
-                "detail": "A training job is already in progress"}
+        return {"status": "already_running", "detail": "A training job is already in progress"}
 
     thread = threading.Thread(target=_run_training, args=(mode,), daemon=True)
     thread.start()
@@ -125,7 +163,7 @@ async def get_prediction():
             coin_id="unknown",
             predicted_price=0,
             current_price=0,
-            sentiment_bias="Neutral"
+            sentiment_bias="Neutral",
         )
     return PredictionResponse(**json.loads(data))
 
@@ -213,14 +251,16 @@ async def get_prediction_history(model: str = "ensemble", limit: int = 100):
     for entry_raw in raw_entries:
         try:
             entry = json.loads(entry_raw)
-            results.append({
-                "timestamp": entry.get("timestamp", 0),
-                "predicted_price": entry.get("predicted_price", 0),
-                "current_price": entry.get("current_price", 0),
-                "confidence": entry.get("confidence", 0),
-                "sentiment_bias": entry.get("sentiment_bias", ""),
-            })
-        except Exception:
+            results.append(
+                {
+                    "timestamp": entry.get("timestamp", 0),
+                    "predicted_price": entry.get("predicted_price", 0),
+                    "current_price": entry.get("current_price", 0),
+                    "confidence": entry.get("confidence", 0),
+                    "sentiment_bias": entry.get("sentiment_bias", ""),
+                }
+            )
+        except Exception:  # noqa: S112
             continue
     # Invertir para orden cronologico (Redis LPUSH = mas reciente primero)
     results.reverse()
@@ -243,13 +283,20 @@ async def get_market_overview():
 
     try:
         from datetime import date, timedelta
+
         table = load_fresh_table("silver.daily_prices")
         recent_date = (date.today() - timedelta(days=7)).isoformat()
         row_filter = f"price_date >= '{recent_date}'"
         # Solo leer columnas que existen en la tabla
         available_cols = {f.name for f in table.schema().fields}
-        want_cols = ["coin_id", "price_date", "price_usd",
-                     "price_change_pct_1d", "market_cap_usd", "volume_24h_usd"]
+        want_cols = [
+            "coin_id",
+            "price_date",
+            "price_usd",
+            "price_change_pct_1d",
+            "market_cap_usd",
+            "volume_24h_usd",
+        ]
         fields = tuple(c for c in want_cols if c in available_cols)
         df_arrow = table.scan(
             row_filter=row_filter,
@@ -264,15 +311,16 @@ async def get_market_overview():
         for coin in coins:
             coin_data = df_arrow.filter(pc.equal(df_arrow["coin_id"], coin))
             rows = coin_data.to_pylist()
-            latest_row = sorted(
-                rows, key=lambda x: x["price_date"], reverse=True)[0]
-            overview.append(MarketOverview(
-                coin_id=latest_row["coin_id"],
-                current_price=latest_row["price_usd"],
-                price_change_24h_pct=latest_row.get("price_change_pct_1d"),
-                market_cap_usd=latest_row.get("market_cap_usd"),
-                volume_24h_usd=latest_row.get("volume_24h_usd")
-            ))
+            latest_row = sorted(rows, key=lambda x: x["price_date"], reverse=True)[0]
+            overview.append(
+                MarketOverview(
+                    coin_id=latest_row["coin_id"],
+                    current_price=latest_row["price_usd"],
+                    price_change_24h_pct=latest_row.get("price_change_pct_1d"),
+                    market_cap_usd=latest_row.get("market_cap_usd"),
+                    volume_24h_usd=latest_row.get("volume_24h_usd"),
+                )
+            )
         return overview
     except Exception as e:
         print(f"Error querying Lake: {e}")
@@ -289,19 +337,22 @@ async def get_fear_greed():
         table = load_fresh_table("bronze.fear_greed_index")
 
         # Solo seleccionar columnas que necesitamos
-        rows = table.scan(
-            selected_fields=("value", "classification", "timestamp"),
-        ).to_arrow().to_pylist()
+        rows = (
+            table.scan(
+                selected_fields=("value", "classification", "timestamp"),
+            )
+            .to_arrow()
+            .to_pylist()
+        )
         if not rows:
             return FearGreedResponse(value=50, classification="Neutral", timestamp=0)
 
-        latest_row = sorted(
-            rows, key=lambda x: x["timestamp"], reverse=True)[0]
+        latest_row = sorted(rows, key=lambda x: x["timestamp"], reverse=True)[0]
 
         return FearGreedResponse(
             value=int(latest_row["value"]),
             classification=latest_row["classification"],
-            timestamp=int(latest_row["timestamp"])
+            timestamp=int(latest_row["timestamp"]),
         )
     except Exception as e:
         print(f"Error FearGreed query: {e}")
@@ -316,21 +367,25 @@ async def get_fear_greed_history():
     """
     try:
         table = load_fresh_table("bronze.fear_greed_index")
-        rows = table.scan(
-            selected_fields=("value", "classification", "timestamp"),
-        ).to_arrow().to_pylist()
+        rows = (
+            table.scan(
+                selected_fields=("value", "classification", "timestamp"),
+            )
+            .to_arrow()
+            .to_pylist()
+        )
         if not rows:
             return []
 
         rows.sort(key=lambda x: x["timestamp"])
 
         from datetime import datetime as dt
+
         # Deduplicate by date (keep latest value per day)
         seen_dates = {}
         for r in rows:
             ts = int(r["timestamp"])
-            date_str = dt.utcfromtimestamp(ts).strftime(
-                "%Y-%m-%d") if ts > 0 else "N/A"
+            date_str = dt.utcfromtimestamp(ts).strftime("%Y-%m-%d") if ts > 0 else "N/A"
             seen_dates[date_str] = FearGreedHistoryItem(
                 value=int(r["value"]),
                 classification=r["classification"],
@@ -353,30 +408,46 @@ async def get_realtime_ohlc(coin_id: str):
     para garantizar datos con máximo 5 minutos de lag.
     Optimizado: ambos filtros (tiempo + coin_id) se aplican en el scan.
     """
-    now_utc = datetime.now(timezone.utc)
+    now_utc = datetime.now(UTC)
     since_dt = now_utc - timedelta(hours=4)
     time_filter = make_iso_filter("window_start", ">=", since_dt)
     row_filter = f"coin_id == '{coin_id}' AND {time_filter}"
 
-    ohlc_fields = ("window_start", "coin_id", "open", "high", "low",
-                   "close", "total_volume", "is_anomaly")
+    ohlc_fields = (
+        "window_start",
+        "coin_id",
+        "open",
+        "high",
+        "low",
+        "close",
+        "total_volume",
+        "is_anomaly",
+    )
 
     try:
         table = load_fresh_table("silver.realtime_vwap")
         available_cols = {f.name for f in table.schema().fields}
         fields = tuple(f for f in ohlc_fields if f in available_cols)
-        filtered_df = table.scan(
-            row_filter=row_filter,
-            selected_fields=fields,
-        ).to_arrow().to_pylist()
+        filtered_df = (
+            table.scan(
+                row_filter=row_filter,
+                selected_fields=fields,
+            )
+            .to_arrow()
+            .to_pylist()
+        )
 
         if not filtered_df:
             # Sin filtro de tiempo como respaldo
             fallback_filter = f"coin_id == '{coin_id}'"
-            filtered_df = table.scan(
-                row_filter=fallback_filter,
-                selected_fields=fields,
-            ).to_arrow().to_pylist()
+            filtered_df = (
+                table.scan(
+                    row_filter=fallback_filter,
+                    selected_fields=fields,
+                )
+                .to_arrow()
+                .to_pylist()
+            )
 
     except Exception as e:
         print(f"ERROR realtime-ohlc [{coin_id}]: {type(e).__name__}: {e}")
@@ -391,7 +462,7 @@ async def get_realtime_ohlc(coin_id: str):
             low=row["low"],
             close=row["close"],
             volume=row["total_volume"],
-            is_anomaly=row.get("is_anomaly", 0)
+            is_anomaly=row.get("is_anomaly", 0),
         )
         for row in sorted(filtered_df, key=lambda x: str(x["window_start"]))
     ]

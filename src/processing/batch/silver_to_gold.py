@@ -116,13 +116,11 @@ def build_fact_market_daily(spark: SparkSession):
     print("\nBuilding fact_market_daily...")
 
     # Register views (tables may or may not exist)
-    spark.table("cryptolake.silver.daily_prices").createOrReplaceTempView(
-        "s_prices")
+    spark.table("cryptolake.silver.daily_prices").createOrReplaceTempView("s_prices")
 
     # Fear & Greed may be in silver.fear_greed or bronze.fear_greed_index
     try:
-        spark.table("cryptolake.silver.fear_greed").createOrReplaceTempView(
-            "s_fear_greed")
+        spark.table("cryptolake.silver.fear_greed").createOrReplaceTempView("s_fear_greed")
         fg_join = """
         LEFT JOIN s_fear_greed fg
             ON pm.price_date = fg.index_date
@@ -253,14 +251,10 @@ if __name__ == "__main__":
     print("CryptoLake — Silver to Gold (Star Schema)")
     print("=" * 60)
 
-    spark = SparkSession.builder.appName(
-        "CryptoLake-SilverToGold").getOrCreate()
+    spark = SparkSession.builder.appName("CryptoLake-SilverToGold").getOrCreate()
 
     try:
-        spark.sql(
-            "CREATE NAMESPACE IF NOT EXISTS cryptolake.gold "
-            "LOCATION 's3://cryptolake-gold/'"
-        )
+        spark.sql("CREATE NAMESPACE IF NOT EXISTS cryptolake.gold LOCATION 's3://cryptolake-gold/'")
 
         build_dim_coins(spark)
         build_dim_dates(spark)

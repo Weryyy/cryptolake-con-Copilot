@@ -6,6 +6,7 @@ y los escribe como tabla Iceberg con append mode.
 
 Uso: spark-submit --master spark://spark-master:7077 stream_to_bronze.py
 """
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col,
@@ -20,19 +21,19 @@ from src.processing.schemas.bronze import BRONZE_REALTIME_PRICES_SCHEMA
 def create_spark_session() -> SparkSession:
     """Crea SparkSession configurada para Iceberg + Kafka."""
     return (
-        SparkSession.builder
-        .appName("CryptoLake-StreamToBronze")
+        SparkSession.builder.appName("CryptoLake-StreamToBronze")
         .config("spark.sql.catalog.cryptolake", "org.apache.iceberg.spark.SparkCatalog")
         .config("spark.sql.catalog.cryptolake.type", "rest")
         .config("spark.sql.catalog.cryptolake.uri", settings.iceberg_catalog_uri)
-        .config("spark.sql.catalog.cryptolake.io-impl",
-                "org.apache.iceberg.aws.s3.S3FileIO")
+        .config("spark.sql.catalog.cryptolake.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
         .config("spark.sql.catalog.cryptolake.s3.endpoint", settings.minio_endpoint)
         .config("spark.sql.catalog.cryptolake.s3.path-style-access", "true")
         .config("spark.sql.catalog.cryptolake.s3.access-key-id", settings.minio_access_key)
         .config("spark.sql.catalog.cryptolake.s3.secret-access-key", settings.minio_secret_key)
-        .config("spark.sql.extensions",
-                "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+        .config(
+            "spark.sql.extensions",
+            "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+        )
         .config("spark.sql.defaultCatalog", "cryptolake")
         .config("spark.sql.shuffle.partitions", "2")
         .config("spark.sql.session.timeZone", "UTC")
@@ -84,8 +85,7 @@ def run_streaming_job():
 
     # 1. Leer de Kafka
     kafka_df = (
-        spark.readStream
-        .format("kafka")
+        spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", settings.kafka_bootstrap_servers)
         .option("subscribe", settings.kafka_topic_prices)
         .option("startingOffsets", "latest")
@@ -95,24 +95,17 @@ def run_streaming_job():
 
     # 2. Parsear JSON del value de Kafka
     parsed_df = (
-        kafka_df
-        .selectExpr("CAST(value AS STRING) as json_value")
-        .select(
-            from_json(col("json_value"), BRONZE_REALTIME_PRICES_SCHEMA)
-            .alias("data")
-        )
+        kafka_df.selectExpr("CAST(value AS STRING) as json_value")
+        .select(from_json(col("json_value"), BRONZE_REALTIME_PRICES_SCHEMA).alias("data"))
         .select("data.*")
     )
 
     # 3. Añadir metadata de Spark
-    enriched_df = parsed_df.withColumn(
-        "_spark_ingested_at", current_timestamp()
-    )
+    enriched_df = parsed_df.withColumn("_spark_ingested_at", current_timestamp())
 
     # 4. Escribir a Iceberg Bronze
     query = (
-        enriched_df.writeStream
-        .format("iceberg")
+        enriched_df.writeStream.format("iceberg")
         .outputMode("append")
         .option("path", "bronze.realtime_prices")
         .option("checkpointLocation", "checkpoints/stream_to_bronze")

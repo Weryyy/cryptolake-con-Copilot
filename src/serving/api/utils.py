@@ -3,7 +3,8 @@ try:
 except ImportError:
     load_catalog = None
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 try:
     import redis
 except ImportError:
@@ -30,7 +31,7 @@ def get_iceberg_catalog():
                 "s3.secret-access-key": os.getenv("AWS_SECRET_ACCESS_KEY", "cryptolake123"),
                 "s3.region": os.getenv("AWS_REGION", "us-east-1"),
                 "s3.path-style-access": "true",
-            }
+            },
         )
     return _catalog
 
@@ -67,7 +68,7 @@ def make_iso_filter(column: str, operator: str, dt: datetime) -> str:
         # -> "window_start >= '2026-02-19T14:00:00+00:00'"
     """
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return f"{column} {operator} '{dt.isoformat()}'"
 
 
@@ -76,15 +77,25 @@ def get_redis_client():
         print("⚠️ redis-py no instalado, simulando cliente...")
 
         class MockRedis:
-            def get(self, *args): return None
-            def set(self, *args, **kwargs): pass
-            def lpush(self, *args): pass
-            def lrange(self, *args): return []
-            def keys(self, *args): return []
+            def get(self, *args):
+                return None
+
+            def set(self, *args, **kwargs):
+                pass
+
+            def lpush(self, *args):
+                pass
+
+            def lrange(self, *args):
+                return []
+
+            def keys(self, *args):
+                return []
+
         return MockRedis()
     return redis.Redis(
         host=os.getenv("REDIS_HOST", "localhost"),
         port=int(os.getenv("REDIS_PORT", 6379)),
         db=0,
-        decode_responses=True
+        decode_responses=True,
     )

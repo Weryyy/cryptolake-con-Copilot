@@ -1,4 +1,5 @@
 """Unit tests for batch extractors."""
+
 from unittest.mock import MagicMock, patch
 
 from src.ingestion.batch.base_extractor import BaseExtractor

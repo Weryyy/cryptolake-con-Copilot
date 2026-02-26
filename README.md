@@ -13,16 +13,17 @@
 
 ---
 
-## � Objetivo del Proyecto
+## 🎯 Objetivo del Proyecto
 El objetivo principal de **CryptoLake** es proporcionar una plataforma de datos robusta, escalable y de baja latencia para el análisis del mercado de criptomonedas. El proyecto demuestra la implementación de patrones modernos de ingeniería de datos, integrando:
 *   **Ingesta Híbrida**: Captura de eventos en tiempo real (Binance) y lotes históricos (CoinGecko).
 *   **Eficiencia de Almacenamiento**: Uso de **Apache Iceberg** para manejar transacciones ACID, evolución de esquemas y compactación de datos.
-*   **Gobernanza y Calidad**: Transformaciones estructuradas con **dbt** y validaciones de calidad en cada capa.
-*   **Servicio de Datos**: Provisión de métricas refinadas a través de una API de alto rendimiento lista para ser consumida por aplicaciones finales.
+*   **Gobernanza y Calidad**: Transformaciones estructuradas con **dbt** y validaciones de calidad con **Great Expectations** en cada capa.
+*   **Machine Learning**: Sistema Ensemble multi-modelo con predicción dual (Legacy TFT + Ensemble) y reentrenamiento automático.
+*   **Servicio de Datos**: Provisión de métricas refinadas a través de una API de alto rendimiento y un dashboard interactivo.
 
 ---
 
-## �🏗️ Architecture
+## 🏗️ Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -52,12 +53,12 @@ El objetivo principal de **CryptoLake** es proporcionar una plataforma de datos 
 │    Spark Streaming    Spark Batch              dbt models            │
 └──────────────────────────────────────────────────────────────────────┘
                               │
-                     ┌────────┴────────┐
-                     ▼                 ▼
-           ┌──────────────┐  ┌──────────────────┐
-           │  FastAPI      │  │  Streamlit        │
-           │  REST API     │  │  Dashboard        │
-           └──────────────┘  └──────────────────┘
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+    ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+    │  FastAPI      │  │  Streamlit    │  │  ML Pipeline │
+    │  REST API     │  │  Dashboard    │  │  (Ensemble)  │
+    └──────────────┘  └──────────────┘  └──────────────┘
 ```
 
 ## 🛠️ Tech Stack
@@ -70,12 +71,13 @@ El objetivo principal de **CryptoLake** es proporcionar una plataforma de datos 
 | **Storage** | MinIO (S3-compatible) | Object storage for Lakehouse |
 | **Transformation** | dbt-core + dbt-spark | SQL-based dimensional modeling (Kimball) |
 | **Orchestration** | Apache Airflow | Pipeline scheduling and monitoring |
-| **Data Quality** | Great Expectations | Automated data validation |
-| **API** | FastAPI | REST API for analytics |
-| **Dashboard** | Streamlit | Interactive visualizations |
+| **Data Quality** | Great Expectations | Automated data validation per layer |
+| **ML** | PyTorch + scikit-learn | Ensemble predictive models (GB + RF + LSTM) |
+| **API** | FastAPI | REST API for analytics + ML inference |
+| **Dashboard** | Streamlit + Plotly | Interactive visualizations with line toggles |
 | **Containers** | Docker + Docker Compose | Reproducible deployment |
 | **IaC** | Terraform | Infrastructure as Code |
-| **CI/CD** | GitHub Actions | Automated testing and deployment |
+| **CI/CD** | GitHub Actions | Automated linting, testing and builds |
 | **Monitoring** | Prometheus + Grafana | Pipeline observability |
 | **Code Quality** | Ruff + mypy + pre-commit | Linting + type checking |
 
@@ -99,14 +101,54 @@ make kafka-create-topics
 python scripts/health_check.py
 ```
 
-## 🧠 Machine Learning: Dual Memory Council
+## 🧠 Machine Learning: Ensemble Multi-Modelo
 
-CryptoLake utiliza un enfoque de **Consejo de Agentes** basado en **Temporal Fusion Transformers (TFT)** con dos modelos de entrenamiento:
+CryptoLake utiliza un sistema **Ensemble multi-modelo** con predicción dual para máxima fiabilidad:
 
-1.  **Memoria Histórica** (`--mode historical`): 200 épocas. Estabilidad macro.
-2.  **Memoria Reciente** (`--mode recent`): 400 épocas. Sensibilidad micro (volatilidad).
+### Modelo Ensemble (Principal)
+| Componente | Peso | Descripción |
+|------------|------|-------------|
+| **GradientBoosting** | ~47% | Clasificación de dirección (sube/baja) con probabilidad |
+| **RandomForest** | ~15% | Confirmación y diversidad |
+| **ReturnLSTM** | ~38% | Magnitud del retorno + dirección con self-attention |
 
-Los modelos son **multivariados** (utilizan Precio + Volumen) y se sincronizan automáticamente con el contenedor de la API mediante volúmenes de Docker.
+### Modelo Legacy TFT (A/B Testing)
+- **Temporal Fusion Transformer** con dos memorias:
+  - **Memoria Histórica** (`--mode historical`): 200 épocas. Estabilidad macro.
+  - **Memoria Reciente** (`--mode recent`): 400 épocas. Sensibilidad micro.
+
+### Features (20 indicadores engineered)
+Retornos multi-lag, volatilidad, RSI, MACD, Bandas de Bollinger, ratio de volumen, momentum, Fear & Greed normalizado, y codificación cíclica de hora del día.
+
+### Precisión
+- **Ensemble**: ~60% dirección (71% filtrando por confianza > 0.2)
+- **Reentrenamiento automático**: Cada 6 horas vía Airflow + API async
+
+### Training Commands
+```bash
+make train-ml-all      # Ensemble + TFT + restart inference
+make train-ensemble    # Solo ensemble
+make train-tft         # Solo TFT (historical + recent)
+```
+
+## 📊 Dashboard Interactivo
+
+El dashboard Streamlit incluye **7 secciones** con auto-refresco y controles de visibilidad:
+
+| Página | Descripción |
+|--------|-------------|
+| **Market Overview** | Precios actuales, predicción AI dual, candlestick BTC real-time, accuracy del mejor modelo |
+| **Price Charts** | Velas intradía OHLC + precio histórico por criptomoneda |
+| **Coin Comparison** | Precio normalizado, métricas lado a lado, volumen comparativo |
+| **Fear & Greed Index** | Gauge de sentimiento + gráfico de barras histórico |
+| **Trading Signals** | Señales combinadas: AI + sentimiento + fiabilidad del modelo |
+| **Logs & System** | Data Quality (GX), alertas del sistema tipo Slack, info de hardware |
+
+**Funcionalidades clave:**
+- 🔀 Toggles para mostrar/ocultar líneas individuales del gráfico
+- 📈 Línea verde EMA (Exponential Moving Average) como mejora de predicción
+- 🏆 Gauge automático del mejor modelo del día
+- 🔍 Zoom persistente con rendering HTML nativo de Plotly
 
 ### Services Dashboard
 
@@ -120,11 +162,37 @@ Los modelos son **multivariados** (utilizan Precio + Volumen) y se sincronizan a
 | **Dashboard** | http://localhost:8501 | — |
 | **Grafana** | http://localhost:3000 | `admin` / `cryptolake` |
 
-## �️ Troubleshooting
+## 🔌 API Endpoints
+
+| Endpoint | Method | Descripción |
+|----------|--------|-------------|
+| `/api/v1/analytics/market-overview` | GET | Vista general del mercado |
+| `/api/v1/analytics/prediction` | GET | Predicción principal |
+| `/api/v1/analytics/dual-prediction` | GET | Legacy vs Ensemble side-by-side |
+| `/api/v1/analytics/model-comparison` | GET | Accuracy metrics por modelo |
+| `/api/v1/analytics/prediction-history/{model}` | GET | Historial de predicciones |
+| `/api/v1/analytics/realtime-ohlc/{coin_id}` | GET | Velas intradía 4h |
+| `/api/v1/analytics/fear-greed-history` | GET | Histórico Fear & Greed |
+| `/api/v1/analytics/dq-reports` | GET | Reportes Data Quality |
+| `/api/v1/analytics/system-alerts` | GET | Alertas del sistema |
+| `/api/v1/ml/retrain?mode=ensemble` | POST | Trigger reentrenamiento async |
+| `/api/v1/ml/retrain-status` | GET | Estado del reentrenamiento |
+| `/api/v1/health/latency` | GET | Latencia por capa del lakehouse |
+
+## 🔁 Orchestración (Airflow DAGs)
+
+| DAG | Schedule | Descripción |
+|-----|----------|-------------|
+| **`dag_full_pipeline`** | Diario @06:00 UTC | Batch extractors → Bronze → Silver → dbt Gold → DQ gates |
+| **`dag_ml_retrain`** | Cada 6 horas | Retrain ensemble vía API → polling status → log resultados |
+| **`dag_ml_training`** | Manual | Training separado (legacy) |
+| **`iceberg_maintenance`** | Diario @02:00 UTC | Compactación de micro-archivos + expiración de snapshots |
+
+## 🛡️ Troubleshooting
 
 Si encuentras problemas al levantar el entorno (errores de Spark, fallos de dependencias en Airflow o el Dashboard), consulta el documento de [Troubleshooting Log](docs/troubleshooting_log.md). Contiene una lista de errores comunes y sus soluciones técnicas.
 
-## �📊 Data Model
+## 📊 Data Model
 
 ### Medallion Architecture
 
@@ -138,38 +206,52 @@ Si encuentras problemas al levantar el entorno (errores de Spark, fallos de depe
 
 - **`fact_market_daily`** — Daily crypto market metrics (price, volume, MAs, sentiment)
 - **`fact_price_hourly`** — Hourly OHLCV from streaming data
+- **`market_ohlc`** — Multi-period OHLC (1h, 4h, 1d candles pre-computed)
 - **`dim_coins`** — Cryptocurrency metadata and statistics
 - **`dim_dates`** — Calendar dimension
+
+### dbt Models (10 SQL models)
+
+| Layer | Models |
+|-------|--------|
+| **Staging** | `stg_prices`, `stg_market_metrics`, `stg_fear_greed` |
+| **Intermediate** | `int_market_enriched`, `int_price_daily_agg` |
+| **Marts** | `fact_market_daily`, `fact_price_hourly`, `market_ohlc`, `dim_coins`, `dim_dates` |
 
 ## 📈 Key Features
 
 - **Dual Pipeline**: Real-time streaming (Kafka → Spark Streaming) + daily batch
 - **Lakehouse Architecture**: Apache Iceberg with Medallion pattern (Bronze → Silver → Gold)
 - **Dimensional Modeling**: Kimball star schema with facts and dimensions
+- **Ensemble ML**: Multi-model predictions with dual A/B testing (Ensemble + Legacy TFT)
 - **Data Contracts**: Schema versioning and quality agreements between layers
 - **Incremental Processing**: `MERGE INTO` for efficient Silver layer updates
-- **Data Quality Gates**: Great Expectations validation suites
+- **Data Quality Gates**: Great Expectations validation suites with dashboard reporting
+- **Interactive Dashboard**: 7 pages, line toggles, zoom persistence, auto-refresh
+- **Automated Retraining**: Airflow DAG triggers ensemble retrain every 6 hours
 - **Production-Ready**: CI/CD, monitoring, alerting, structured logging
 
 ## 🗂️ Project Structure
 
 ```
 cryptolake/
-├── .github/workflows/       # CI/CD pipelines
-├── docker/                  # Dockerfiles (Spark, Airflow, API)
+├── .github/workflows/       # CI/CD pipelines (lint, test, dbt, docker)
+├── docker/                  # Dockerfiles (Spark, Airflow, API, Prometheus)
 ├── terraform/               # Infrastructure as Code
 ├── src/
 │   ├── config/              # Centralized settings (Pydantic)
 │   ├── ingestion/           # Streaming (Kafka) + Batch extractors
-│   ├── processing/          # Spark jobs (Bronze, Silver)
-│   ├── transformation/      # dbt models (Gold layer)
-│   ├── orchestration/       # Airflow DAGs
-│   ├── quality/             # Great Expectations suites
-│   └── serving/             # FastAPI + Streamlit
+│   ├── processing/          # Spark jobs (Bronze, Silver, VWAP)
+│   ├── transformation/      # dbt models (10 SQL: staging, intermediate, marts)
+│   ├── orchestration/       # Airflow DAGs (pipeline, ML retrain, maintenance)
+│   ├── quality/             # Great Expectations DQ engine + validators
+│   ├── serving/             # FastAPI + Streamlit dashboard
+│   └── ml/                  # Ensemble training, inference, features (20)
+├── models/                  # Pre-trained ML models (TFT, GB, RF, LSTM)
 ├── tests/                   # Unit + Integration tests
 ├── docs/                    # Architecture, data dictionary, contracts
 ├── scripts/                 # Setup and utility scripts
-├── docker-compose.yml       # Full local environment
+├── docker-compose.yml       # Full local environment (12+ services)
 ├── Makefile                 # Developer commands
 └── pyproject.toml           # Python project configuration
 ```
@@ -212,18 +294,18 @@ Estamos evolucionando el proyecto con las siguientes mejoras críticas:
 
 ### 1. Optimización del Almacenamiento (Iceberg Tuning)
 *   **Hidden Partitioning & Sort Orders**: Implementación de `SORTED BY (timestamp)` en archivos Iceberg para maximizar el *data skipping* con PyArrow.
-*   **Compaction DAG**: Automatización con Airflow para ejecutar `rewriteDataFiles`, consolidando micro-archivos de streaming en archivos optimizados.
+*   **Compaction DAG**: ✅ Automatización con Airflow para ejecutar `rewriteDataFiles`, consolidando micro-archivos de streaming.
 
 ### 2. Algoritmos de Rendimiento
-*   **VWAP en Tiempo Real**: Cálculo distribuido del precio promedio ponderado por volumen en ventanas deslizantes.
-*   **Detección de Anomalías**: Capa de QA que utiliza Z-Score para identificar y marcar variaciones sospechosas en tiempo real.
+*   **VWAP en Tiempo Real**: ✅ Cálculo distribuido del precio promedio ponderado por volumen en ventanas deslizantes (`silver.realtime_vwap`).
+*   **Detección de Anomalías**: Capa de QA que utiliza Z-Score para identificar variaciones sospechosas.
 
 ### 3. Analytics Avanzado (Gold Layer)
-*   **Modelos OHLC**: Agregaciones dbt para velas de 1h, 4h y 1d directamente en la capa Gold.
-*   **API Hot-Path**: Migración de las consultas pesadas del dashboard a tablas Gold pre-agregadas.
+*   **Modelos OHLC**: ✅ Agregaciones dbt para velas de 1h, 4h y 1d en `market_ohlc`.
+*   **API Hot-Path**: Migración de consultas pesadas a tablas Gold pre-agregadas.
 
 ### 4. Caché de Baja Latencia
-*   **Redis Integration**: Almacenamiento en caché de los "últimos 5 minutos" de precios para reducir la carga sobre el Storage Layer y permitir una respuesta de API sub-10ms.
+*   **Redis Integration**: ✅ Almacenamiento en caché de alertas, DQ reports y estado de reentrenamiento.
 
 ---
 
