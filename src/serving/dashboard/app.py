@@ -362,24 +362,27 @@ if _dual_sidebar:
     # Legacy info
     _leg = _dual_sidebar.get('legacy')
     if _leg and _leg.get('predicted_price', 0) > 0:
-        _leg_diff = ((_leg['predicted_price'] - _leg['current_price']) / _leg['current_price']) * 100 if _leg.get('current_price', 0) > 0 else 0
+        _leg_diff = ((_leg['predicted_price'] - _leg['current_price']) /
+                     _leg['current_price']) * 100 if _leg.get('current_price', 0) > 0 else 0
         _leg_icon = "🟢" if _leg_diff > 0 else "🔴"
         st.sidebar.info(f"🧠 Legacy TFT: {_leg_icon} {_leg_diff:+.3f}%")
 
     # Ensemble info
     _ens = _dual_sidebar.get('ensemble')
     if _ens and _ens.get('predicted_price', 0) > 0:
-        _ens_diff = ((_ens['predicted_price'] - _ens['current_price']) / _ens['current_price']) * 100 if _ens.get('current_price', 0) > 0 else 0
+        _ens_diff = ((_ens['predicted_price'] - _ens['current_price']) /
+                     _ens['current_price']) * 100 if _ens.get('current_price', 0) > 0 else 0
         _ens_icon = "🟢" if _ens_diff > 0 else "🔴"
         st.sidebar.success(f"🎯 Ensemble: {_ens_icon} {_ens_diff:+.3f}%")
         # Show ensemble model details
         _md = _ens.get('memory_details', {})
         if isinstance(_md, dict) and 'gb_prob' in _md:
             st.sidebar.caption(
-                f"GB:{_md.get('gb_prob',0):.0%} RF:{_md.get('rf_prob',0):.0%} LSTM:{_md.get('lstm_prob',0):.0%}"
+                f"GB:{_md.get('gb_prob', 0):.0%} RF:{_md.get('rf_prob', 0):.0%} LSTM:{_md.get('lstm_prob', 0):.0%}"
             )
 
-    st.sidebar.caption(f"Primary: **{_dual_sidebar.get('primary_model', 'N/A')}**")
+    st.sidebar.caption(
+        f"Primary: **{_dual_sidebar.get('primary_model', 'N/A')}**")
 
 st.title("🏔️ CryptoLake — Crypto Analytics Dashboard")
 st.markdown("---")
